@@ -1,8 +1,6 @@
 package com.example.taximeter
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -11,7 +9,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -22,10 +19,10 @@ fun HomeTab(
     ride: Ride,
     running: Boolean,
     tariffs: Tariffs,
+    gpsFix: GpsFix?,
     onStart: () -> Unit,
     onBoard: () -> Unit,
     onToggleRun: () -> Unit,
-    onMapTap: () -> Unit,
     onFinish: () -> Unit
 ) {
     val fare = ride.fare(tariffs)
@@ -52,45 +49,29 @@ fun HomeTab(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Map card. Tapping the map adds 100 m while the ride is running (GPS is not connected yet).
+        // Map card: the real route, updated from GPS while the ride is running.
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f).card(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            val gpsOk = gpsFix != null
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).clip(CircleShape).background(Green))
+                Box(Modifier.size(10.dp).clip(CircleShape).background(if (gpsOk) Green else Muted))
                 Spacer(Modifier.width(8.dp))
-                Text("GPS აქტიური ✓", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text(
+                    if (gpsOk) "GPS აქტიური ✓" else "GPS არ არის",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp
+                )
                 Spacer(Modifier.weight(1f))
-                Text("43.73166, 10.81344", color = Muted, fontSize = 12.sp)
+                gpsFix?.let { Text("%.5f, %.5f".format(it.lat, it.lon), color = Muted, fontSize = 12.sp) }
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(MapBg)
-                    .clickable(onClick = onMapTap)
-            ) {
-                Canvas(Modifier.fillMaxSize()) {
-                    val step = 40.dp.toPx()
-                    var x = 0f
-                    while (x <= size.width) {
-                        drawLine(GridLine, Offset(x, 0f), Offset(x, size.height), strokeWidth = 1f)
-                        x += step
-                    }
-                    var y = 0f
-                    while (y <= size.height) {
-                        drawLine(GridLine, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
-                        y += step
-                    }
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    drawCircle(Green, radius = 14.dp.toPx(), center = center)
-                    drawCircle(MapBg, radius = 5.dp.toPx(), center = center)
-                }
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                RouteMap(ride.path, ride.legs(), Modifier.fillMaxSize())
                 Text(
-                    "სიზუსტე: 5მ",
+                    gpsFix?.let { "სიზუსტე: %.0fმ".format(it.accuracy.toDouble()) } ?: "",
                     color = Muted,
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
@@ -130,8 +111,7 @@ fun HomeTab(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                val modeTitle = if (ride.started) " • ${ride.mode.label}" else ""
-                Text("ფასი • EUR$modeTitle", color = Muted, fontSize = 13.sp)
+                Text("ფასი • EUR", color = Muted, fontSize = 13.sp)
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text("€", color = Yellow, fontSize = 40.sp, fontWeight = FontWeight.Bold)
                     Text("%.2f".format(fare), color = Color.White, fontSize = 48.sp, fontWeight = FontWeight.Bold)

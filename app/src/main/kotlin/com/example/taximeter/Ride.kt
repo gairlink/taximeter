@@ -1,5 +1,7 @@
 package com.example.taximeter
 
+import java.util.UUID
+
 enum class LegKind { PICKUP, STANDARD, FRIENDS }
 
 /** One billed part of a ride. A pickup ride has a PICKUP leg, then a STANDARD leg after boarding. */
@@ -9,7 +11,7 @@ data class Leg(val kind: LegKind, val meters: Long, val seconds: Long)
 data class FareLine(val group: String, val label: String, val amount: Double)
 
 /** A point on the simulated route. [leg] is the index of the leg it belongs to. */
-data class PathPoint(val x: Float, val y: Float, val leg: Int)
+data class PathPoint(val lat: Double, val lon: Double, val leg: Int)
 
 /** The ride in progress. Immutable: every change makes a copy. */
 data class Ride(
@@ -40,12 +42,27 @@ data class Ride(
     fun fare(t: Tariffs): Double = fareLines(legs(), t).sumOf { it.amount }
 }
 
-/** Builds the fare rows for each leg. Each standard band starts from 0 km within its own leg. */
+/**
+ * Builds the fare rows for each leg. Each standard band starts from 0 km within its own leg.
+ *
+ * FIXED:
+ * - Boarding fee is charged only once per ride (first STANDARD / first FRIENDS leg),
+ *   not once per leg.
+ * - Free wait minutes are a per-ride allowance: unused free minutes carry over
+ *   to the next leg instead of resetting on every leg.
+ */
 fun fareLines(legs: List<Leg>, t: Tariffs): List<FareLine> {
     val lines = mutableListOf<FareLine>()
+
+    var standardBoardingCharged = false
+    var friendBoardingCharged = false
+    // Remaining free-wait allowance for the whole ride, not per leg.
+    var remainingFreeWait = t.freeWaitMinutes.coerceAtLeast(0.0)
+
     legs.forEach { leg ->
         val km = leg.meters / 1000.0
         val minutes = leg.seconds / 60.0
+
         when (leg.kind) {
             LegKind.PICKUP -> {
                 val group = "🚗 კლიენტამდე"
@@ -54,27 +71,42 @@ fun fareLines(legs: List<Leg>, t: Tariffs): List<FareLine> {
                     lines += FareLine(group, "ლოდინი %.1f წთ × €%.2f".format(minutes, t.pickupWaitPerMinute), minutes * t.pickupWaitPerMinute)
                 }
             }
+
             LegKind.FRIENDS -> {
                 val group = "👥 ახლობლები"
                 lines += FareLine(group, "%.3f კმ × €%.2f".format(km, t.friendPerKm), km * t.friendPerKm)
-                if (t.friendBoarding > 0) lines += FareLine(group, "ჩაჯდომა", t.friendBoarding)
+                // FIX: charge friend boarding only on the first FRIENDS leg.
+                if (!friendBoardingCharged && t.friendBoarding > 0) {
+                    lines += FareLine(group, "ჩაჯდომა", t.friendBoarding)
+                    friendBoardingCharged = true
+                }
                 if (t.friendWaitPerMinute > 0 && minutes > 0) {
                     lines += FareLine(group, "ლოდინი %.1f წთ × €%.2f".format(minutes, t.friendWaitPerMinute), minutes * t.friendWaitPerMinute)
                 }
             }
+
             LegKind.STANDARD -> {
                 val group = "📊 ძირითადი (%.2fკმ)".format(km)
                 val band1 = minOf(km, 5.0)
                 val band2 = (minOf(km, 15.0) - 5.0).coerceAtLeast(0.0)
                 val band3 = (km - 15.0).coerceAtLeast(0.0)
+
                 if (band1 > 0) lines += FareLine(group, "0-5კმ: %.3f × €%.2f".format(band1, t.km0to5), band1 * t.km0to5)
                 if (band2 > 0) lines += FareLine(group, "5-15კმ: %.3f × €%.2f".format(band2, t.km5to15), band2 * t.km5to15)
                 if (band3 > 0) lines += FareLine(group, "15+კმ: %.3f × €%.2f".format(band3, t.km15plus), band3 * t.km15plus)
-                val wait = (minutes - t.freeWaitMinutes).coerceAtLeast(0.0)
+
+                // FIX: free wait is per-ride. Unused free minutes carry to the next leg.
+                val wait = (minutes - remainingFreeWait).coerceAtLeast(0.0)
+                remainingFreeWait = (remainingFreeWait - minutes).coerceAtLeast(0.0)
                 if (wait > 0 && t.waitPerMinute > 0) {
                     lines += FareLine(group, "ლოდინი %.1f წთ × €%.2f".format(wait, t.waitPerMinute), wait * t.waitPerMinute)
                 }
-                if (t.boarding > 0) lines += FareLine(group, "ჩაჯდომა", t.boarding)
+
+                // FIX: charge boarding only on the first STANDARD leg.
+                if (!standardBoardingCharged && t.boarding > 0) {
+                    lines += FareLine(group, "ჩაჯდომა", t.boarding)
+                    standardBoardingCharged = true
+                }
             }
         }
     }
@@ -105,7 +137,8 @@ fun tripFrom(ride: Ride, t: Tariffs, now: Long): Trip {
     val total = fare.sumOf { it.amount }
     val km = ride.totalMeters / 1000.0
     return Trip(
-        id = System.nanoTime(),
+        // FIX: UUID-based id instead of System.nanoTime() - unique even across restarts.
+        id = UUID.randomUUID().mostSignificantBits,
         time = now,
         mode = ride.mode,
         legs = legs,
@@ -113,6 +146,8 @@ fun tripFrom(ride: Ride, t: Tariffs, now: Long): Trip {
         lines = fare,
         fare = total,
         fuel = km * fuelEurPerKm(t),
+        // TODO: wear is not calculated yet (0.0). Add a wear-per-km tariff
+        // in Tariffs.kt when you decide the rate, otherwise profit is overstated.
         wear = 0.0
     )
 }

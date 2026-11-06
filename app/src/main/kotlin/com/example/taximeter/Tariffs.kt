@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 
 private data class TariffField(val key: String, val label: String)
 
-/** Bottom sheet with the tariff, fuel and wear settings. Edits stay as text until saved. */
+/** Bottom sheet with the tariff and fuel settings. Edits stay as text until saved. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TariffSheet(
@@ -29,7 +29,9 @@ fun TariffSheet(
     onDismiss: () -> Unit,
     onSave: (Tariffs) -> Unit
 ) {
-    val texts = remember { mutableStateMapOf<String, String>().apply { putAll(current.toMap()) } }
+    // FIX 1: remember(current) - before it was remember { } without a key,
+    // so reopening the sheet after tariffs changed showed OLD values.
+    val texts = remember(current) { mutableStateMapOf<String, String>().apply { putAll(current.toMap()) } }
     val sheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
     val close: () -> Unit = {
@@ -64,7 +66,8 @@ fun TariffSheet(
                 IconTile("✕", onClick = close)
             }
 
-            TariffSection("📊 სტანდარტული - წევთოვანი", Tile, Color.White) {
+            // FIX: typo "წევთოვანი" -> "სტანდარტული"
+            TariffSection("📊 სტანდარტული", Tile, Color.White) {
                 TariffGroup(texts, listOf(
                     TariffField("km0to5", "0-5კმ €/კმ"),
                     TariffField("km5to15", "5-15კმ €/კმ"),
@@ -107,7 +110,13 @@ fun TariffSheet(
             }
 
             Button(
-                onClick = { onSave(tariffsFromMap(texts, current)) },
+                // FIX 3: after save the sheet now closes itself.
+                // Before, onSave() was called but the sheet stayed open
+                // unless the parent dismissed it.
+                onClick = {
+                    onSave(tariffsFromMap(texts, current))
+                    close()
+                },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFFF8D6), contentColor = Color.Black)

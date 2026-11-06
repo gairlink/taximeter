@@ -1,9 +1,14 @@
 package com.example.taximeter
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -27,22 +32,37 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.delay
-import kotlin.math.cos
-import kotlin.math.sin
 
 private val CATEGORIES = listOf("⛽ საწვავი", "🔧 რემონტი", "🧾 სხვა")
 
 class MainActivity : ComponentActivity() {
+    override fun onStart() {
+        super.onStart()
+        TripService.setAppVisible(true)
+    }
+
+    override fun onStop() {
+        TripService.setAppVisible(false)
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Android 15 and later draw the app under the status and navigation bars.
         enableEdgeToEdge()
+        // Hide the top status bar while the app is open; a swipe down shows it briefly.
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.statusBars())
+        }
         val store = Store(this)
         val initial = store.load()
         val activity = this
         setContent {
-            Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
+            Box(Modifier.fillMaxSize().background(Bg).systemBarsPadding()) {
                 TaxiProScreen(
                     initial = initial,
                     onSave = { store.save(it) },
@@ -68,6 +88,9 @@ fun TaxiProScreen(
     var sheetOpen by remember { mutableStateOf(false) }
     var pickerOpen by remember { mutableStateOf(false) }
     var openTrip by remember { mutableStateOf<Trip?>(null) }
+    // Last counted GPS point, and the latest reading (for the map status).
+    var anchor by remember { mutableStateOf<GpsFix?>(null) }
+    var gpsFix by remember { mutableStateOf<GpsFix?>(null) }
 
     // Saves after every change, including the unfinished ride, so nothing is lost on restart.
     val snapshot = Snapshot(trips.toList(), expenses.toList(), tariffs, ride)
@@ -79,6 +102,37 @@ fun TaxiProScreen(
             delay(1000)
             ride = ride.copy(seconds = ride.seconds + 1)
         }
+    }
+
+    // Each GPS reading from TripService updates distance, route and fare right away.
+    val context = LocalView.current.context
+    DisposableEffect(Unit) {
+        RideGps.listener = { fix ->
+            val (next, a) = applyFix(ride, anchor, fix)
+            ride = next
+            anchor = a
+            gpsFix = fix
+        }
+        onDispose { RideGps.listener = null }
+    }
+    // The service runs while a ride is started, so GPS also keeps going in the background.
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) TripService.start(context)
+    }
+    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    DisposableEffect(ride.started) {
+        if (ride.started) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (hasLocationPermission(context)) TripService.start(context)
+            else permissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        } else {
+            TripService.stop(context)
+        }
+        onDispose { }
     }
 
     // The screen stays on for the whole ride, including when it is paused.
@@ -102,14 +156,15 @@ fun TaxiProScreen(
                     tariffs = tariffs,
                     onStart = { pickerOpen = true },
                     onBoard = { ride = boardPassenger(ride) },
+                    gpsFix = gpsFix,
                     onToggleRun = { ride = ride.copy(running = !ride.running) },
-                    onMapTap = { if (ride.running) ride = addRoutePoint(ride) },
                     onFinish = {
                         if (ride.started) {
                             if (ride.totalMeters > 0 || ride.totalSeconds > 0) {
                                 trips.add(tripFrom(ride, tariffs, System.currentTimeMillis()))
                             }
                             ride = Ride()
+                            anchor = null
                         }
                     }
                 )
@@ -170,6 +225,7 @@ fun TaxiProScreen(
             onPick = { mode ->
                 pickerOpen = false
                 ride = startRide(mode)
+                anchor = null
             },
             onDismiss = { pickerOpen = false }
         )
@@ -198,17 +254,6 @@ private fun boardPassenger(ride: Ride): Ride = ride.copy(
     meters = 0L,
     seconds = 0L
 )
-
-/** One simulated step of 100 m. The route follows a fixed pattern until real GPS is connected. */
-private fun addRoutePoint(ride: Ride): Ride {
-    val i = ride.path.size
-    val point = PathPoint(
-        x = (0.5 + 0.38 * sin(i * 0.35)).toFloat(),
-        y = (0.5 + 0.34 * cos(i * 0.23)).toFloat(),
-        leg = ride.done.size
-    )
-    return ride.copy(meters = ride.meters + 100, path = ride.path + point)
-}
 
 @Composable
 private fun TopBar(rideActive: Boolean, onTariffClick: () -> Unit) {
@@ -282,20 +327,6 @@ private fun HistoryTab(
 
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         PeriodHeader("📜 ისტორია", period, onPeriodChange)
-
-        Column(Modifier.fillMaxWidth().card()) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Spacer(Modifier.weight(1f))
-                ActionChip("CSV", Color.White) {
-                    onSaveCsv("trips.csv", tripsCsv(list))
-                }
-                ActionChip("წაშლა", Red, onClick = onClear)
-            }
-        }
 
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f).card().verticalScroll(rememberScrollState()),
@@ -384,11 +415,6 @@ private fun StatsTab(
             Text("პერიოდი: ${periodLabel(period)}", color = Muted, fontSize = 12.sp)
         }
 
-        Column(Modifier.fillMaxWidth().card()) {
-            ActionChip("📥 CSV", Color.White) {
-                onSaveCsv("trips.csv", tripsCsv(t))
-            }
-        }
     }
 }
 
@@ -512,12 +538,6 @@ private fun ExpensesTab(
             }
             Spacer(Modifier.height(8.dp))
             Text("პერიოდი: ${periodLabel(period)}", color = Muted, fontSize = 12.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ActionChip("📥 CSV", Color.White) {
-                    onSaveCsv("expenses.csv", expensesCsv(list))
-                }
-                ActionChip("🗑 წაშლა", Red, onClick = onClear)
-            }
         }
     }
 }

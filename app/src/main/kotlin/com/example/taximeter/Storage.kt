@@ -57,12 +57,13 @@ private fun legFromJson(o: JSONObject): Leg =
     Leg(LegKind.valueOf(o.getString("kind")), o.getLong("meters"), o.getLong("seconds"))
 
 private fun pathToJson(path: List<PathPoint>): JSONArray = JSONArray().apply {
-    path.forEach { put(JSONObject().put("x", it.x.toDouble()).put("y", it.y.toDouble()).put("leg", it.leg)) }
+    path.forEach { put(JSONObject().put("lat", it.lat).put("lon", it.lon).put("leg", it.leg)) }
 }
 
+/** Points saved by the old simulated route have no lat/lon and are dropped. */
 private fun pathFromJson(a: JSONArray?): List<PathPoint> = a.mapItems {
-    PathPoint(it.getDouble("x").toFloat(), it.getDouble("y").toFloat(), it.getInt("leg"))
-}
+    PathPoint(it.optDouble("lat", Double.NaN), it.optDouble("lon", Double.NaN), it.optInt("leg"))
+}.filter { !it.lat.isNaN() && !it.lon.isNaN() }
 
 private fun tripToJson(t: Trip): JSONObject = JSONObject().apply {
     put("id", t.id)

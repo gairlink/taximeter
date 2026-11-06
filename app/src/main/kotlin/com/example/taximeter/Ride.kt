@@ -5,7 +5,10 @@ import java.util.UUID
 enum class LegKind { PICKUP, STANDARD, FRIENDS }
 
 /** One billed part of a ride. A pickup ride has a PICKUP leg, then a STANDARD leg after boarding. */
-data class Leg(val kind: LegKind, val meters: Long, val seconds: Long)
+// waitSeconds = time spent PAUSED (⏸ პაუზა) inside this leg. Driving time is `seconds`.
+// BEFORE this field did not exist, so fareLines() used `seconds` (the WHOLE ride time)
+// as waiting - that is why a 20 min drive showed 20 min of waiting.
+data class Leg(val kind: LegKind, val meters: Long, val seconds: Long, val waitSeconds: Long = 0L)
 
 /** A fare row. Rows with the same [group] are shown together in the details sheet. */
 data class FareLine(val group: String, val label: String, val amount: Double)
@@ -24,8 +27,12 @@ data class Ride(
     val boarded: Boolean = false,
     val meters: Long = 0L,
     val seconds: Long = 0L,
+    val waitSeconds: Long = 0L,
     val done: List<Leg> = emptyList(),
-    val path: List<PathPoint> = emptyList()
+    val path: List<PathPoint> = emptyList(),
+    // Last instant GPS speed (km/h). NOT billed - only shown on the speedometer.
+    // The service updates it on every fix; the UI polls it from the saved ride.
+    val speedKmh: Double = 0.0
 ) {
     val legKind: LegKind
         get() = when {
@@ -39,10 +46,14 @@ data class Ride(
 
     val totalMeters: Long get() = done.sumOf { it.meters } + meters
     val totalSeconds: Long get() = done.sumOf { it.seconds } + seconds
+    val totalWaitSeconds: Long get() = done.sumOf { it.waitSeconds } + waitSeconds
 
-    fun legs(): List<Leg> = done + Leg(legKind, meters, seconds)
+    fun legs(): List<Leg> = done + Leg(legKind, meters, seconds, waitSeconds)
 
-    fun fare(t: Tariffs): Double = fareLines(legs(), t).sumOf { it.amount }
+    // Minimum fare applies once the ride has started - a started ride
+    // never costs less than minFare (€10). Before starting, fareLines runs
+    // with applyMin=false, so the idle screen still shows the real fare.
+    fun fare(t: Tariffs): Double = fareLines(legs(), t, applyMin = started).sumOf { it.amount }
 }
 
 /**
@@ -54,17 +65,19 @@ data class Ride(
  * - Free wait minutes are a per-ride allowance: unused free minutes carry over
  *   to the next leg instead of resetting on every leg.
  */
-fun fareLines(legs: List<Leg>, t: Tariffs): List<FareLine> {
+fun fareLines(legs: List<Leg>, t: Tariffs, applyMin: Boolean = false): List<FareLine> {
     val lines = mutableListOf<FareLine>()
 
     var standardBoardingCharged = false
     var friendBoardingCharged = false
-    // Remaining free-wait allowance for the whole ride, not per leg.
-    var remainingFreeWait = t.freeWaitMinutes.coerceAtLeast(0.0)
+    // No more free waiting: every waiting minute is billed in full.
 
     legs.forEach { leg ->
         val km = leg.meters / 1000.0
-        val minutes = leg.seconds / 60.0
+        // FIX: waiting = ONLY the paused time (waitSeconds), NOT the whole leg time.
+        // Before, `minutes` was leg.seconds / 60 - the full driving time - so the
+        // whole ride was billed as waiting on top of the km price.
+        val minutes = leg.waitSeconds / 60.0
 
         when (leg.kind) {
             LegKind.PICKUP -> {
@@ -98,9 +111,8 @@ fun fareLines(legs: List<Leg>, t: Tariffs): List<FareLine> {
                 if (band2 > 0) lines += FareLine(group, "5-15კმ: %.3f × €%.2f".format(band2, t.km5to15), band2 * t.km5to15)
                 if (band3 > 0) lines += FareLine(group, "15+კმ: %.3f × €%.2f".format(band3, t.km15plus), band3 * t.km15plus)
 
-                // FIX: free wait is per-ride. Unused free minutes carry to the next leg.
-                val wait = (minutes - remainingFreeWait).coerceAtLeast(0.0)
-                remainingFreeWait = (remainingFreeWait - minutes).coerceAtLeast(0.0)
+                // All waiting is billed - no free minutes anymore.
+                val wait = minutes
                 if (wait > 0 && t.waitPerMinute > 0) {
                     lines += FareLine(group, "ლოდინი %.1f წთ × €%.2f".format(wait, t.waitPerMinute), wait * t.waitPerMinute)
                 }
@@ -111,6 +123,20 @@ fun fareLines(legs: List<Leg>, t: Tariffs): List<FareLine> {
                     standardBoardingCharged = true
                 }
             }
+        }
+    }
+    // Minimum fare. If the ride's fare is below minFare (€10), top it up
+    // so the total is never less than the minimum. Shown as its own line, so
+    // the breakdown still sums to the total. Only when applyMin (started ride /
+    // finished trip) - the idle screen before Start is not topped up.
+    if (applyMin) {
+        val total = lines.sumOf { it.amount }
+        if (total < t.minFare) {
+            lines += FareLine(
+                "💰 მინიმალური ტარიფი",
+                "მინიმუმ €%.2f".format(t.minFare),
+                t.minFare - total
+            )
         }
     }
     return lines
@@ -135,7 +161,8 @@ data class Trip(
 /** Turns a finished ride into a [Trip], snapshotting the fare with the tariffs in use now. */
 fun tripFrom(ride: Ride, t: Tariffs, now: Long): Trip {
     val legs = ride.legs()
-    val fare = fareLines(legs, t)
+    // Finished trip: minimum fare applies here too.
+    val fare = fareLines(legs, t, applyMin = true)
     val total = fare.sumOf { it.amount }
     val km = ride.totalMeters / 1000.0
     return Trip(

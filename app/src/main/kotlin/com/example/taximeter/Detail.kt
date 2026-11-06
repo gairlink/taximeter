@@ -1,6 +1,8 @@
 package com.example.taximeter
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -9,13 +11,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
@@ -29,11 +36,33 @@ private fun legColor(kind: LegKind?): Color = when (kind) {
     else -> Blue
 }
 
-/** Draws a saved route: each leg in its own colour, start in green and finish in red. */
+/** Draws a saved route: each leg in its own colour, start in green and finish in red.
+ *
+ * Zoomable, like the live map in Route.kt:
+ * - Starts fitted: the WHOLE saved route fits the box (as before).
+ * - ＋ / － buttons (top-right) or pinch to zoom in / out around the route centre.
+ * - Drag to look around; double-tap to reset to the fitted whole route.
+ * Before, the preview was a fixed picture - a long route was a tiny squiggle
+ * and you could not zoom into a street.
+ */
 @Composable
 fun RoutePreview(path: List<PathPoint>, legs: List<Leg>, modifier: Modifier) {
+    var zoom by remember { mutableStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
     Box(modifier.clip(RoundedCornerShape(16.dp)).background(MapBg)) {
-        Canvas(Modifier.fillMaxSize()) {
+        Canvas(
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, panChange, zoomChange, _ ->
+                        pan += panChange
+                        if (zoomChange != 1f) zoom = (zoom * zoomChange).coerceIn(0.25f, 8f)
+                    }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(onDoubleTap = { zoom = 1f; pan = Offset.Zero })
+                }
+        ) {
             val step = 40.dp.toPx()
             var x = 0f
             while (x <= size.width) {
@@ -45,26 +74,58 @@ fun RoutePreview(path: List<PathPoint>, legs: List<Leg>, modifier: Modifier) {
                 drawLine(GridLine, Offset(0f, y), Offset(size.width, y), strokeWidth = 1f)
                 y += step
             }
-            // FIX: PathPoint now holds real lat/lon (Double), NOT 0..1 x/y.
-            // Before: pt.x * width with x = 43.7 gave a point far off-screen,
-            // so the saved route never showed. Now we use the same project()
-            // as RouteMap in Route.kt, so the route fits the box.
-            val pts = project(path, size.width, size.height)
-            pts.indices.groupBy { path[it].leg }.forEach { (leg, idx) ->
+            if (path.isEmpty()) return@Canvas
+            // Centre = middle of the route. Fit scale = the old project() behaviour:
+            // the whole route fits the box at zoom 1x. Zoom multiplies that scale.
+            val minLat = path.minOf { it.lat }; val maxLat = path.maxOf { it.lat }
+            val minLon = path.minOf { it.lon }; val maxLon = path.maxOf { it.lon }
+            val cLat = (minLat + maxLat) / 2; val cLon = (minLon + maxLon) / 2
+            val kx = kotlin.math.cos(Math.toRadians(cLat))
+            val spanLatM = (maxLat - minLat) * 111320.0
+            val spanLonM = (maxLon - minLon) * kx * 111320.0
+            val spanM = maxOf(spanLatM, spanLonM, 55.0)
+            val fitScale = (minOf(size.width, size.height) - 48f) / spanM.toFloat()
+            val pxPerM = fitScale * zoom
+            val c = Offset(size.width / 2f, size.height / 2f)
+            fun toScreen(pt: PathPoint): Offset = Offset(
+                (c.x + ((pt.lon - cLon) * kx * 111320.0).toFloat() * pxPerM + pan.x),
+                (c.y - ((pt.lat - cLat) * 111320.0).toFloat() * pxPerM + pan.y)
+            )
+            path.indices.groupBy { path[it].leg }.forEach { (leg, idx) ->
                 if (idx.size < 2) return@forEach
                 val line = Path()
                 idx.forEachIndexed { i, k ->
-                    if (i == 0) line.moveTo(pts[k].x, pts[k].y) else line.lineTo(pts[k].x, pts[k].y)
+                    val pt = toScreen(path[k])
+                    if (i == 0) line.moveTo(pt.x, pt.y) else line.lineTo(pt.x, pt.y)
                 }
                 drawPath(line, color = legColor(legs.getOrNull(leg)?.kind), style = Stroke(width = 5f, cap = StrokeCap.Round))
             }
-            pts.firstOrNull()?.let {
-                drawCircle(Green, radius = 9.dp.toPx(), center = it)
-            }
-            pts.lastOrNull()?.let {
-                drawCircle(Red, radius = 9.dp.toPx(), center = it)
+            toScreen(path.first()).let { drawCircle(Green, radius = 9.dp.toPx(), center = it) }
+            toScreen(path.last()).let { drawCircle(Red, radius = 9.dp.toPx(), center = it) }
+        }
+        // Zoom buttons, top-right - same style as the live map.
+        Column(
+            Modifier.align(Alignment.TopEnd).padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("＋" to { zoom = (zoom * 1.5f).coerceIn(0.25f, 8f) },
+                   "－" to { zoom = (zoom / 1.5f).coerceIn(0.25f, 8f) }).forEach { (label, action) ->
+                Box(
+                    Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF2B2B2B))
+                        .clickable(onClick = action),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(label, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
+        Text(
+            "🔍 %.1fx".format(zoom),
+            color = Muted,
+            fontSize = 12.sp,
+            modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
+        )
     }
 }
 

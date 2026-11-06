@@ -9,11 +9,15 @@ import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Looper
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -21,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -38,8 +43,9 @@ import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** One GPS reading. [accuracy] is the radius in metres. */
-data class GpsFix(val lat: Double, val lon: Double, val accuracy: Float)
+/** One GPS reading. [accuracy] is the radius in metres.
+ * [speedKmh] = instant GPS speed (Location.speed), 0 when the chip has none. */
+data class GpsFix(val lat: Double, val lon: Double, val accuracy: Float, val speedKmh: Double = 0.0)
 
 /** Readings less accurate than this are ignored. */
 private const val MAX_ACCURACY_M = 20f
@@ -88,7 +94,10 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
-            onFix(GpsFix(location.latitude, location.longitude, location.accuracy))
+            // Instant speed from the GPS chip (m/s -> km/h). hasSpeed() guards
+            // chips that report no speed - those give 0, not a stale value.
+            val speed = if (location.hasSpeed()) (location.speed * 3.6).coerceAtLeast(0.0) else 0.0
+            onFix(GpsFix(location.latitude, location.longitude, location.accuracy, speed))
         }
 
         // FIX: onStatusChanged removed - it is deprecated in LocationListener and was empty.
@@ -99,8 +108,25 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
 
     @SuppressLint("MissingPermission")
     fun start() {
-        if (!hasLocationPermission(context) || !manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) return
-        manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
+        if (!hasLocationPermission(context)) return
+        // FIX: GPS alone never fixes indoors / takes minutes. Use NETWORK too
+        // (Wi-Fi / cell) for a fast first fix, GPS for accuracy afterwards.
+        // + deliver the last known location immediately, so the UI does not
+        // sit on "GPS-ის ძებნა…" while waiting for the first fresh fix.
+        try {
+            val last = manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                ?: manager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+            if (last != null) {
+                val speed = if (last.hasSpeed()) (last.speed * 3.6).coerceAtLeast(0.0) else 0.0
+                onFix(GpsFix(last.latitude, last.longitude, last.accuracy, speed))
+            }
+        } catch (e: Exception) { /* no last location yet - wait for the first update */ }
+        if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            manager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
+        }
+        if (manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            manager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
+        }
     }
 
     fun stop() {
@@ -158,50 +184,124 @@ private data class MapView(val zoom: Float = 1f, val pan: Offset = Offset.Zero)
 
 private const val MAX_ZOOM = 20f
 
-/** Map with the real route: each leg in its own colour, start in green and the latest point in red.
- *  Drag to move, pinch to zoom, double-tap to fit the whole route again. */
+/** Live map: follows the car, fixed scale - the route NEVER compresses.
+ *
+ * BEFORE: project() fitted the WHOLE route into the box, so the longer the ride,
+ * the smaller the scale got - after a few km the whole route was a tiny squiggle
+ * and you could not tell streets apart.
+ *
+ * NOW:
+ * - The camera is centred on the car (last point) and shows a FIXED area around it
+ *   (~600 m across at zoom 1x), no matter how long the ride is. Old parts of the
+ *   route simply scroll off the screen, like in Waze / Google Maps.
+ * - Pinch to zoom, +/- buttons to zoom, drag to look around.
+ * - Dragging turns follow OFF (the camera stays where you left it); the ◎ button
+ *   (or double-tap) turns follow back ON and re-centres on the car.
+ * - project() is still used by Detail.kt's RoutePreview, which SHOULD show the
+ *   whole saved route fitted in the box. Only this live map changed.
+ */
 @Composable
 fun RouteMap(path: List<PathPoint>, legs: List<Leg>, modifier: Modifier) {
-    var view by remember { mutableStateOf(MapView()) }
+    // Zoom: pixels per metre. 0.5 px/m at 1x -> ~600 m across a 300px box.
+    // Buttons / pinch multiply it, clamped so you cannot zoom into nothing
+    // or out to the whole city.
+    var zoom by remember { mutableStateOf(1f) }
+    var follow by remember { mutableStateOf(true) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    // Centre frozen at the moment follow was turned off (by dragging).
+    var frozenCenter by remember { mutableStateOf<PathPoint?>(null) }
+    val lastPoint = path.lastOrNull()
+    // Effective centre: the car when following, the frozen point when looking around.
+    val center = if (follow) lastPoint else (frozenCenter ?: lastPoint)
+
     Box(modifier.clip(RoundedCornerShape(16.dp)).background(MapBg)) {
         Canvas(
             Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
-                    detectTransformGestures { centroid, pan, zoomChange, _ ->
-                        val c = Offset(size.width / 2f, size.height / 2f)
-                        val old = view
-                        val nz = (old.zoom * zoomChange).coerceIn(1f, MAX_ZOOM)
-                        if (nz <= 1f) {
-                            view = MapView()
-                        } else {
-                            // Keep the point under the fingers in place while zooming.
-                            val k = nz / old.zoom
-                            val q = centroid - c
-                            view = MapView(nz, q - (q - old.pan) * k + pan)
+                    detectTransformGestures { _, panChange, zoomChange, _ ->
+                        // Any drag = "I want to look around" -> follow OFF.
+                        if (panChange != Offset.Zero) {
+                            if (follow) { frozenCenter = lastPoint; follow = false }
+                            pan += panChange
+                        }
+                        if (zoomChange != 1f) {
+                            zoom = (zoom * zoomChange).coerceIn(0.25f, 8f)
                         }
                     }
                 }
                 .pointerInput(Unit) {
-                    detectTapGestures(onDoubleTap = { view = MapView() })
+                    // Double-tap = back to the car, zoom 1x, follow ON.
+                    detectTapGestures(onDoubleTap = {
+                        zoom = 1f; pan = Offset.Zero; frozenCenter = null; follow = true
+                    })
                 }
         ) {
             drawGrid()
-            val c = Offset(size.width / 2f, size.height / 2f)
-            val v = view
-            val pts = project(path, size.width, size.height).map { p ->
-                c + (p - c) * v.zoom + v.pan
-            }
-            pts.indices.groupBy { path[it].leg }.forEach { (leg, idx) ->
-                if (idx.size < 2) return@forEach
-                val line = Path()
-                idx.forEachIndexed { i, k ->
-                    if (i == 0) line.moveTo(pts[k].x, pts[k].y) else line.lineTo(pts[k].x, pts[k].y)
+            if (center != null) {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val kx = cos(Math.toRadians(center.lat))
+                val pxPerM = 0.5f * zoom
+                fun toScreen(pt: PathPoint): Offset {
+                    val dxM = (pt.lon - center.lon) * kx * 111320.0
+                    val dyM = (pt.lat - center.lat) * 111320.0
+                    return Offset(
+                        (c.x + dxM.toFloat() * pxPerM + pan.x),
+                        (c.y - dyM.toFloat() * pxPerM + pan.y)
+                    )
                 }
-                drawPath(line, color = legColor(legs.getOrNull(leg)?.kind), style = Stroke(width = 5f, cap = StrokeCap.Round))
+                // Same leg colours as before: green = pickup, yellow = friends, blue = ride.
+                path.indices.groupBy { path[it].leg }.forEach { (leg, idx) ->
+                    if (idx.size < 2) return@forEach
+                    val line = Path()
+                    idx.forEachIndexed { i, k ->
+                        val p = toScreen(path[k])
+                        if (i == 0) line.moveTo(p.x, p.y) else line.lineTo(p.x, p.y)
+                    }
+                    drawPath(line, color = legColor(legs.getOrNull(leg)?.kind), style = Stroke(width = 5f, cap = StrokeCap.Round))
+                }
+                toScreen(path.first()).let { drawCircle(Green, radius = 9.dp.toPx(), center = it) }
+                toScreen(lastPoint!!).let { drawCircle(Red, radius = 9.dp.toPx(), center = it) }
             }
-            pts.firstOrNull()?.let { drawCircle(Green, radius = 9.dp.toPx(), center = it) }
-            pts.lastOrNull()?.let { drawCircle(Red, radius = 9.dp.toPx(), center = it) }
         }
+        // Zoom buttons: always visible, top-right. They sit ON TOP of the map,
+        // taps on them do NOT hit the map underneath.
+        androidx.compose.foundation.layout.Column(
+            Modifier.align(androidx.compose.ui.Alignment.TopEnd)
+                .padding(10.dp),
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("＋" to { zoom = (zoom * 1.5f).coerceIn(0.25f, 8f) },
+                   "－" to { zoom = (zoom / 1.5f).coerceIn(0.25f, 8f) }).forEach { (label, action) ->
+                androidx.compose.foundation.layout.Box(
+                    Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF2B2B2B))
+                        .clickable(onClick = action),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    androidx.compose.material3.Text(label, color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+            // Follow button: only shows when you dragged away from the car.
+            if (!follow) {
+                androidx.compose.foundation.layout.Box(
+                    Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                        .background(Color(0xFF2196F3))
+                        .clickable(onClick = { zoom = 1f; pan = Offset.Zero; frozenCenter = null; follow = true }),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    androidx.compose.material3.Text("◎", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        // Current zoom, bottom-RIGHT now (was bottom-left) - the speedometer
+        // + limit sign live in the bottom-left corner, so the zoom label moved
+        // here to stop them overlapping during a ride.
+        androidx.compose.material3.Text(
+            "🔍 %.1fx".format(zoom),
+            color = Muted,
+            fontSize = 12.sp,
+            modifier = Modifier.align(androidx.compose.ui.Alignment.BottomEnd).padding(10.dp)
+        )
     }
 }

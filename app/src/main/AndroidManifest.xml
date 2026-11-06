@@ -2,7 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.taximeter">
 
-    <!-- Merged: permissions from BOTH sides of the conflict -->
+    <!-- FIX: INTERNET was missing. Without it Google Maps tiles never load,
+         even with a valid API key. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -12,7 +13,6 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
@@ -31,20 +31,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- No Google Maps meta-data: no API key is defined in this project
-             (build.gradle has no manifestPlaceholders for MAPS_API_KEY),
-             and the app draws its own RouteMap in Route.kt, not Google Maps.
-             Leaving the placeholder caused:
-             "unresolved manifest placeholder ${MAPS_API_KEY}". -->
-
-        <!-- NO <service> here on purpose.
-             The conflict had TWO dead services:
-             .TripService (your side) and .RideTrackingService (GitHub side).
-             Neither file exists in the project, so declaring them is wrong.
-             GPS runs via GpsTracker in MainActivity / Route.kt, not via a Service.
-             If we ever add a real RideTrackingService.kt file, we add its
-             <service> line back here. -->
-
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+        <service
+            android:name=".RideTrackingService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
     </application>
 </manifest>

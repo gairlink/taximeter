@@ -143,21 +143,24 @@ internal fun TariffSection(
     }
 }
 
-/** Lays out the fields two per row. */
+/** Lays out the fields three per row. */
 @Composable
 private fun TariffGroup(texts: MutableMap<String, String>, fields: List<TariffField>) {
-    fields.chunked(2).forEach { pair ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            pair.forEach { field -> TariffInput(field, texts, Modifier.weight(1f)) }
-            if (pair.size == 1) Spacer(Modifier.weight(1f))
+    fields.chunked(3).forEach { row ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            row.forEach { field -> TariffInput(field, texts, Modifier.weight(1f)) }
+            // A short last row keeps the same column widths: fill the empty slots.
+            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
         }
     }
 }
 
 @Composable
 private fun TariffInput(field: TariffField, texts: MutableMap<String, String>, modifier: Modifier) {
-    Column(modifier) {
-        Text(field.label, color = Muted, fontSize = 12.sp)
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        // One line, so a narrow (1/3 width) column stays the same height as the others.
+        // Long labels like "უფასო ლოდინი წთ" are cut with ... instead of wrapping to 2 lines.
+        Text(field.label, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
         OutlinedTextField(
             value = texts[field.key].orEmpty(),
             onValueChange = { texts[field.key] = it },
@@ -165,7 +168,9 @@ private fun TariffInput(field: TariffField, texts: MutableMap<String, String>, m
             textStyle = TextStyle(fontSize = 14.sp),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(44.dp),
+            // FIX: normal height (56dp is the standard Material text field height).
+            // Before it was 44dp, which squeezed the text vertically.
+            modifier = Modifier.fillMaxWidth().height(56.dp),
             colors = fieldColors()
         )
     }

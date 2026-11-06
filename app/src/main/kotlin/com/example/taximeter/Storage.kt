@@ -57,13 +57,16 @@ private fun legFromJson(o: JSONObject): Leg =
     Leg(LegKind.valueOf(o.getString("kind")), o.getLong("meters"), o.getLong("seconds"))
 
 private fun pathToJson(path: List<PathPoint>): JSONArray = JSONArray().apply {
+    // FIX: PathPoint is (lat: Double, lon: Double, leg: Int), NOT (x: Float, y: Float).
     path.forEach { put(JSONObject().put("lat", it.lat).put("lon", it.lon).put("leg", it.leg)) }
 }
 
-/** Points saved by the old simulated route have no lat/lon and are dropped. */
 private fun pathFromJson(a: JSONArray?): List<PathPoint> = a.mapItems {
-    PathPoint(it.optDouble("lat", Double.NaN), it.optDouble("lon", Double.NaN), it.optInt("leg"))
-}.filter { !it.lat.isNaN() && !it.lon.isNaN() }
+    // Backward compatible: old files saved "x" / "y" (0..1 simulated points).
+    val lat = if (it.has("lat")) it.getDouble("lat") else it.optDouble("y", 0.0)
+    val lon = if (it.has("lon")) it.getDouble("lon") else it.optDouble("x", 0.0)
+    PathPoint(lat, lon, it.getInt("leg"))
+}
 
 private fun tripToJson(t: Trip): JSONObject = JSONObject().apply {
     put("id", t.id)
@@ -76,9 +79,15 @@ private fun tripToJson(t: Trip): JSONObject = JSONObject().apply {
     })
     put("fare", t.fare)
     put("fuel", t.fuel)
-    put("wear", t.wear)
+    // FIX: "wear" is NOT written anymore - Trip has no wear field (see Ride.kt).
+    // Old files may still contain "wear" - it is ignored on read, so history is not lost.
 }
 
+// FIX for the screenshot error:
+// "No value passed for parameter 'wear' in tripFromJson / Trip("
+// That happened because this Trip( call and the Trip class did not match:
+// one side still had wear, the other did not.
+// In THIS pair both sides agree: Trip has NO wear, and Trip( passes NO wear.
 private fun tripFromJson(o: JSONObject): Trip = Trip(
     id = o.getLong("id"),
     time = o.getLong("time"),
@@ -89,8 +98,9 @@ private fun tripFromJson(o: JSONObject): Trip = Trip(
         FareLine(it.getString("group"), it.getString("label"), it.getDouble("amount"))
     },
     fare = o.getDouble("fare"),
-    fuel = o.getDouble("fuel"),
-    wear = o.optDouble("wear", 0.0)
+    fuel = o.getDouble("fuel")
+    // NOTE: no wear = ... here on purpose. If your Trip still has wear,
+    // you MUST also paste the Ride.kt below - otherwise this line is the error.
 )
 
 private fun rideToJson(r: Ride): JSONObject = JSONObject()

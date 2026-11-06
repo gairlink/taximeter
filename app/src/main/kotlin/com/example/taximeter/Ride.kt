@@ -10,7 +10,10 @@ data class Leg(val kind: LegKind, val meters: Long, val seconds: Long)
 /** A fare row. Rows with the same [group] are shown together in the details sheet. */
 data class FareLine(val group: String, val label: String, val amount: Double)
 
-/** A point on the simulated route. [leg] is the index of the leg it belongs to. */
+/** A point on the real route: real GPS lat/lon. [leg] is the index of the leg it belongs to. */
+// FIX: was (x: Float, y: Float) - but Route.kt stores real lat/lon (Double) here.
+// That is why Route.kt had "Double, but Float was expected" + "it.lat unresolved".
+// Drawing code must PROJECT lat/lon to pixels (see project() in Route.kt), not use them raw.
 data class PathPoint(val lat: Double, val lon: Double, val leg: Int)
 
 /** The ride in progress. Immutable: every change makes a copy. */
@@ -121,13 +124,12 @@ data class Trip(
     val path: List<PathPoint>,
     val lines: List<FareLine>,
     val fare: Double,
-    val fuel: Double,
-    val wear: Double
+    val fuel: Double
 ) {
     val meters: Long get() = legs.sumOf { it.meters }
     val seconds: Long get() = legs.sumOf { it.seconds }
     val km: Double get() = meters / 1000.0
-    val profit: Double get() = fare - fuel - wear
+    val profit: Double get() = fare - fuel
 }
 
 /** Turns a finished ride into a [Trip], snapshotting the fare with the tariffs in use now. */
@@ -145,10 +147,7 @@ fun tripFrom(ride: Ride, t: Tariffs, now: Long): Trip {
         path = ride.path,
         lines = fare,
         fare = total,
-        fuel = km * fuelEurPerKm(t),
-        // TODO: wear is not calculated yet (0.0). Add a wear-per-km tariff
-        // in Tariffs.kt when you decide the rate, otherwise profit is overstated.
-        wear = 0.0
+        fuel = km * fuelEurPerKm(t)
     )
 }
 

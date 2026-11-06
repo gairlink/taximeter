@@ -26,8 +26,10 @@ data class Tariffs(
     val pickupPerKm: Double = 0.35,
     val pickupWaitPerMinute: Double = 0.0,
     val fuelLitersPer100Km: Double = 6.0,
-    val fuelPricePerLiter: Double = 2.25,
-    val wearPercent: Double = 0.0
+    val fuelPricePerLiter: Double = 2.25
+    // FIX: wearPercent removed - nothing in Ride.kt / Detail.kt / Export.kt uses it anymore.
+    // Before, Model.kt had wearPercent but the fare code ignored it, and Storage.kt
+    // expected Trip.wear which no longer exists - so the project did not compile.
 )
 
 fun Tariffs.toMap(): Map<String, String> = mapOf(
@@ -43,8 +45,7 @@ fun Tariffs.toMap(): Map<String, String> = mapOf(
     "pickupPerKm" to pickupPerKm.toString(),
     "pickupWaitPerMinute" to pickupWaitPerMinute.toString(),
     "fuelLitersPer100Km" to fuelLitersPer100Km.toString(),
-    "fuelPricePerLiter" to fuelPricePerLiter.toString(),
-    "wearPercent" to wearPercent.toString()
+    "fuelPricePerLiter" to fuelPricePerLiter.toString()
 )
 
 fun parseEur(text: String?, fallback: Double): Double =
@@ -64,8 +65,7 @@ fun tariffsFromMap(m: Map<String, String?>, old: Tariffs): Tariffs = Tariffs(
     pickupPerKm = parseEur(m["pickupPerKm"], old.pickupPerKm),
     pickupWaitPerMinute = parseEur(m["pickupWaitPerMinute"], old.pickupWaitPerMinute),
     fuelLitersPer100Km = parseEur(m["fuelLitersPer100Km"], old.fuelLitersPer100Km),
-    fuelPricePerLiter = parseEur(m["fuelPricePerLiter"], old.fuelPricePerLiter),
-    wearPercent = parseEur(m["wearPercent"], old.wearPercent)
+    fuelPricePerLiter = parseEur(m["fuelPricePerLiter"], old.fuelPricePerLiter)
 )
 
 fun Tariffs.toJson(): JSONObject = JSONObject(toMap())

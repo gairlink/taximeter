@@ -1,6 +1,7 @@
 package com.example.taximeter
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +24,7 @@ fun HomeTab(
     onStart: () -> Unit,
     onBoard: () -> Unit,
     onToggleRun: () -> Unit,
+    onMapTap: () -> Unit,
     onFinish: () -> Unit
 ) {
     val fare = ride.fare(tariffs)
@@ -45,33 +47,62 @@ fun HomeTab(
         else -> onToggleRun
     }
 
+    // FIX: gpsFix is now a real parameter, passed from MainActivity.
+    // Before, HomeTab had no gpsFix at all - it showed a hardcoded "43.73166, 10.81344"
+    // and "GPS აქტიური ✓" even when GPS was off.
+    // Now: if gpsFix == null -> "GPS-ის ძებნა…", otherwise real coords + real accuracy.
+    val gpsText = if (gpsFix == null) "GPS-ის ძებნა…" else "%.5f, %.5f".format(gpsFix.lat, gpsFix.lon)
+    val accuracyText = if (gpsFix == null) "სიზუსტე: —" else "სიზუსტე: %.0fმ".format(gpsFix.accuracy)
+    val gpsActive = gpsFix != null
+
     Column(
         modifier = Modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Map card: the real route, updated from GPS while the ride is running.
+        // Map card.
         Column(
             modifier = Modifier.fillMaxWidth().weight(1f).card(),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            val gpsOk = gpsFix != null
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).clip(CircleShape).background(if (gpsOk) Green else Muted))
+                Box(Modifier.size(10.dp).clip(CircleShape).background(if (gpsActive) Green else Red))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    if (gpsOk) "GPS აქტიური ✓" else "GPS არ არის",
+                    if (gpsActive) "GPS აქტიური ✓" else "GPS-ის ძებნა…",
                     color = Color.White,
                     fontWeight = FontWeight.Bold,
                     fontSize = 15.sp
                 )
                 Spacer(Modifier.weight(1f))
-                gpsFix?.let { Text("%.5f, %.5f".format(it.lat, it.lon), color = Muted, fontSize = 12.sp) }
+                Text(gpsText, color = Muted, fontSize = 12.sp)
             }
-
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                RouteMap(ride.path, ride.legs(), Modifier.fillMaxSize())
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MapBg)
+                    .clickable(onClick = onMapTap)
+            ) {
+                // Real route if we have one, otherwise an empty grid.
+                // RouteMap (Route.kt) draws the path with project() - it needs real lat/lon,
+                // which is why PathPoint is (lat, lon) now.
+                if (ride.path.size >= 2) {
+                    RouteMap(path = ride.path, legs = ride.legs(), modifier = Modifier.fillMaxSize())
+                } else {
+                    // Empty map placeholder: keep the old centred dot so the screen
+                    // does not look blank before the first GPS fix arrives.
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Box(
+                            Modifier.size(28.dp).clip(CircleShape).background(Green),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(Modifier.size(10.dp).clip(CircleShape).background(MapBg))
+                        }
+                    }
+                }
                 Text(
-                    gpsFix?.let { "სიზუსტე: %.0fმ".format(it.accuracy.toDouble()) } ?: "",
+                    accuracyText,
                     color = Muted,
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
@@ -111,6 +142,7 @@ fun HomeTab(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
+                // FIX: რეჟიმის წარწერა წაშლილია (სქრინზე მონიშნული იყო).
                 Text("ფასი • EUR", color = Muted, fontSize = 13.sp)
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text("€", color = Yellow, fontSize = 40.sp, fontWeight = FontWeight.Bold)

@@ -7,7 +7,6 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.os.Bundle
 import android.os.Looper
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -92,7 +91,8 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
             onFix(GpsFix(location.latitude, location.longitude, location.accuracy))
         }
 
-        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+        // FIX: onStatusChanged removed - it is deprecated in LocationListener and was empty.
+        // Before, overriding it produced: "This declaration overrides a deprecated member..."
         override fun onProviderEnabled(provider: String) {}
         override fun onProviderDisabled(provider: String) {}
     }

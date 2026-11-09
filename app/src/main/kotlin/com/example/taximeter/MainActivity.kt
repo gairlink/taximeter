@@ -53,7 +53,6 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val store = Store(this)
         val initial = store.load()
-        val activity = this
         // Bubble visibility is tied to the Activity lifecycle, NOT to the service:
         // minimised (onPause) -> bubble appears, back in the app (onResume) -> bubble hides.
         // The service keeps counting in both cases.
@@ -80,8 +79,7 @@ class MainActivity : ComponentActivity() {
                         } else {
                             store.save(snap)
                         }
-                    },
-                    onSaveCsv = { name, content -> saveCsv(activity, name, content) }
+                    }
                 )
             }
         }
@@ -104,8 +102,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun TaxiProScreen(
     initial: Snapshot,
-    onSave: (Snapshot) -> Unit,
-    onSaveCsv: (String, String) -> Unit = { _, _ -> }
+    onSave: (Snapshot) -> Unit
 ) {
     // FIX (Finish did not clear): a "zombie" ride - started=false but meters /
     // seconds / path still filled (from the old polling bug) - shows exactly the
@@ -333,33 +330,22 @@ fun TaxiProScreen(
                 1 -> HistoryTab(
                     trips = trips,
                     period = period,
-                    onSaveCsv = onSaveCsv,
                     onPeriodChange = { period = it },
                     onOpen = { openTrip = it },
-                    onDelete = { trip -> trips.removeAll { it.id == trip.id } },
-                    onClear = {
-                        val start = periodStart(period)
-                        trips.removeAll { it.time >= start }
-                    }
+                    onDelete = { trip -> trips.removeAll { it.id == trip.id } }
                 )
                 2 -> StatsTab(
                     trips = trips,
                     expenses = expenses,
                     period = period,
-                    onSaveCsv = onSaveCsv,
                     onPeriodChange = { period = it }
                 )
                 3 -> ExpensesTab(
                     expenses = expenses,
                     period = period,
-                    onSaveCsv = onSaveCsv,
                     onPeriodChange = { period = it },
                     onAdd = { category, amount, note ->
                         expenses.add(Expense(System.nanoTime(), System.currentTimeMillis(), category, amount, note))
-                    },
-                    onClear = {
-                        val start = periodStart(period)
-                        expenses.removeAll { it.time >= start }
                     }
                 )
                 else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -520,11 +506,9 @@ private fun SectionHeader(title: String, period: Period, onChange: (Period) -> U
 private fun HistoryTab(
     trips: List<Trip>,
     period: Period,
-    onSaveCsv: (String, String) -> Unit,
     onPeriodChange: (Period) -> Unit,
     onOpen: (Trip) -> Unit,
-    onDelete: (Trip) -> Unit,
-    onClear: () -> Unit
+    onDelete: (Trip) -> Unit
 ) {
     val start = periodStart(period)
     val list = trips.filter { it.time >= start }.sortedByDescending { it.time }
@@ -733,7 +717,6 @@ private fun StatsTab(
     trips: List<Trip>,
     expenses: List<Expense>,
     period: Period,
-    onSaveCsv: (String, String) -> Unit,
     onPeriodChange: (Period) -> Unit
 ) {
     val start = periodStart(period)
@@ -794,7 +777,7 @@ private fun StatsTab(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Column {
                         Text("წმინდა მოგება", color = Muted, fontSize = 14.sp)
-                        Text("€%.2f".format(profit), color = Green, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+                        Text("€%.2f".format(profit), color = if (profit >= 0) Green else Red, fontSize = 36.sp, fontWeight = FontWeight.Bold)
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         ProfitLine("შემოსავალი", "€%.2f".format(revenue), Yellow)
@@ -905,10 +888,8 @@ private fun StatsTab(
 private fun ExpensesTab(
     expenses: List<Expense>,
     period: Period,
-    onSaveCsv: (String, String) -> Unit,
     onPeriodChange: (Period) -> Unit,
-    onAdd: (String, Double, String) -> Unit,
-    onClear: () -> Unit
+    onAdd: (String, Double, String) -> Unit
 ) {
     val start = periodStart(period)
     val list = expenses.filter { it.time >= start }.sortedByDescending { it.time }
@@ -1014,7 +995,7 @@ private fun ExpensesTab(
                     Text("€%.2f".format(ex.amount), color = Red, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 }
             }
-            // FIX: პერიოდი + CSV + წაშლა წაშლილია (სქრინზე მონიშნული იყო).
+            // FIX: ზედა ზოლი + CSV + წაშლა წაშლილია (სქრინზე მონიშნული იყო).
         }
     }
 }

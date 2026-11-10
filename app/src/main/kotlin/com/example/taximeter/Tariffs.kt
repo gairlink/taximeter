@@ -38,7 +38,6 @@ fun TariffSheet(
         scope.launch { sheetState.hide() }.invokeOnCompletion { onDismiss() }
     }
     val fuelPerKm = parseEur(texts["fuelLitersPer100Km"], 0.0) / 100.0 * parseEur(texts["fuelPricePerLiter"], 0.0)
-    val wearPerKm = parseEur(texts["wearPerKm"], 0.0)
 
     ModalBottomSheet(
         onDismissRequest = close,
@@ -74,8 +73,8 @@ fun TariffSheet(
                     TariffField("km5to15", "5-15კმ €/კმ"),
                     TariffField("km15plus", "15+კმ €/კმ"),
                     TariffField("waitPerMinute", "ლოდინი €/წთ"),
-                    TariffField("boarding", "ჩაჯდომა €"),
-                    TariffField("freeWaitMinutes", "უფასო ლოდინი წთ")
+                    TariffField("boarding", "ჩაჯდომა €")
+                    // FIX: phantom free-wait field removed - it was never saved.
                 ))
             }
 
@@ -110,20 +109,7 @@ fun TariffSheet(
                 )
             }
 
-            // FIX 2: Wear section was missing even though the sheet title says
-            // "tariff, fuel and wear". Without this field wear stayed 0.0 in Ride.kt.
-            // IMPORTANT: add `wearPerKm: Double = 0.0` to the Tariffs data class
-            // (Model.kt) + toMap() / tariffsFromMap(), otherwise this field won't save.
-            TariffSection("🔧 ცვეთა", Tile, Color.White) {
-                TariffGroup(texts, listOf(
-                    TariffField("wearPerKm", "ცვეთა €/კმ")
-                ))
-                Text(
-                    "ცვეთა: €%.3f/კმ".format(wearPerKm),
-                    color = Muted,
-                    fontSize = 12.sp
-                )
-            }
+            // FIX: Wear section removed - it was never saved, always 0.0.
 
             Button(
                 // FIX 3: after save the sheet now closes itself.
@@ -162,26 +148,32 @@ internal fun TariffSection(
 /** Lays out the fields two per row. */
 @Composable
 private fun TariffGroup(texts: MutableMap<String, String>, fields: List<TariffField>) {
-    fields.chunked(2).forEach { pair ->
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            pair.forEach { field -> TariffInput(field, texts, Modifier.weight(1f)) }
-            if (pair.size == 1) Spacer(Modifier.weight(1f))
+    // FIX: 3 fields per row (was 2) - boxes narrower so 3 fit on one row.
+    // Last incomplete row is padded with spacers so widths stay equal.
+    fields.chunked(3).forEach { row ->
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            row.forEach { field -> TariffInput(field, texts, Modifier.weight(1f)) }
+            repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
         }
     }
 }
 
 @Composable
 private fun TariffInput(field: TariffField, texts: MutableMap<String, String>, modifier: Modifier) {
-    Column(modifier) {
+    // FIX (numbers look cut off): field was 44dp high with 14sp text + default
+    // padding, so the digits were clipped at the bottom and the label
+    // sat right on the border. Now: gap between label and field, taller field,
+    // NOTE: this Material3 version has no padding param on OutlinedTextField - height alone fixes clipping.
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(field.label, color = Muted, fontSize = 12.sp)
         OutlinedTextField(
             value = texts[field.key].orEmpty(),
             onValueChange = { texts[field.key] = it },
             singleLine = true,
-            textStyle = TextStyle(fontSize = 14.sp),
+            textStyle = TextStyle(fontSize = 16.sp),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(44.dp),
+            modifier = Modifier.fillMaxWidth().height(52.dp),
             colors = fieldColors()
         )
     }

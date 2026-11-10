@@ -10,6 +10,9 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -48,16 +51,28 @@ import kotlin.math.sin
 private val CATEGORIES = listOf("⛽ საწვავი", "🔧 რემონტი", "🧾 სხვა")
 
 class MainActivity : ComponentActivity() {
+    // FIX: hide the phone status bar (time / 5G / battery) while the app is open.
+    // Only statusBars are hidden - navigation bar stays. Swipe from the top
+    // brings it back temporarily (BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE).
+    private fun hideStatusBar() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.statusBars())
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        hideStatusBar()
         val store = Store(this)
         val initial = store.load()
         // Bubble visibility is tied to the Activity lifecycle, NOT to the service:
         // minimised (onPause) -> bubble appears, back in the app (onResume) -> bubble hides.
         // The service keeps counting in both cases.
         setContent {
-            Box(Modifier.fillMaxSize().background(Bg).safeDrawingPadding()) {
+            Box(Modifier.fillMaxSize().background(Bg).navigationBarsPadding()) {
                 TaxiProScreen(
                     initial = initial,
                     // FIX (counting stops on reopen): if the file holds a STARTED ride
@@ -76,6 +91,25 @@ class MainActivity : ComponentActivity() {
                         // After a stale recreate, trip counts are equal -> restore fileRide.
                         if (fileRide.started && !snap.ride.started && snap.trips.size <= fileSnap.trips.size) {
                             store.save(snap.copy(ride = fileRide))
+                        } else if (snap.ride.started && fileRide.started) {
+                            // FIX (time did not count): UI snapshot is 1s BEHIND the
+                            // service. Blindly saving it REWINDED file seconds/meters
+                            // to the older UI value every second, so time flickered
+                            // / stood still. Merge: always keep the NEWER progress.
+                            val mergedRide = snap.ride.copy(
+                                meters = maxOf(snap.ride.meters, fileRide.meters),
+                                seconds = if ((fileRide.seconds + fileRide.waitSeconds) >= (snap.ride.seconds + snap.ride.waitSeconds)) fileRide.seconds else snap.ride.seconds,
+                                waitSeconds = if ((fileRide.seconds + fileRide.waitSeconds) >= (snap.ride.seconds + snap.ride.waitSeconds)) fileRide.waitSeconds else snap.ride.waitSeconds,
+                                speedKmh = fileRide.speedKmh,
+                                path = if (fileRide.path.size >= snap.ride.path.size) fileRide.path else snap.ride.path,
+                                // Local flags are the truth for start/board/mode/done,
+                                // but running must follow the file if service is counting:
+                                // if UI says paused, keep paused; if UI says running,
+                                // keep running - never flip a running ride to paused
+                                // just because the loaded snapshot was stale.
+                                running = snap.ride.running
+                            )
+                            store.save(snap.copy(ride = mergedRide))
                         } else {
                             store.save(snap)
                         }
@@ -85,8 +119,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideStatusBar()
+    }
+
     override fun onResume() {
         super.onResume()
+        hideStatusBar()
         // Back in the app -> hide the bubble. Only if a ride is running, otherwise
         // the intent would needlessly (re)create the service.
         if (Store(this).load().ride.started) RideTrackingService.setOverlayVisible(this, false)
@@ -163,7 +203,7 @@ fun TaxiProScreen(
     // NOTHING made the dot go red again ("GPS-ის ძებნა…") right after Start.
     // Keep the last idle fix until the first route point arrives.
     val gpsFix: GpsFix? = if (ride.started) {
-        ride.path.lastOrNull()?.let { GpsFix(it.lat, it.lon, 10f) } ?: idleFix
+        ride.path.lastOrNull()?.let { GpsFix(it.lat, it.lon, 10f, ride.speedKmh) } ?: idleFix
     } else idleFix
 
     // Road limit lookup: runs when the car moved > 100 m since the last lookup
@@ -322,6 +362,13 @@ fun TaxiProScreen(
                                 trips.add(tripFrom(ride, tariffs, System.currentTimeMillis()))
                             }
                             ride = Ride()
+                            // FIX (Finish did not work): save SYNCHRONOUSLY, right now.
+                            // Before, Finish only changed UI state and waited for
+                            // LaunchedEffect(snapshot) to save. In that gap the
+                            // service tick / polling could re-save the OLD started
+                            // ride to the file, and the ride came back to life.
+                            // Now the finished state is written before stop().
+                            store.save(Snapshot(trips.toList(), expenses.toList(), tariffs, Ride()))
                             // Stop background counting - the ride is over.
                             RideTrackingService.stop(context)
                         }
@@ -423,15 +470,30 @@ fun TaxiProScreen(
 private fun startRide(mode: RideMode): Ride =
     Ride(started = true, running = true, mode = mode)
 
+// FIX: "Appear on top" - without this, Settings.canDrawOverlays() is false
+// and the bubble never shows. Manifest-ში უნდა იყოს:
+// <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+fun ensureOverlayPermission(context: android.content.Context): Boolean {
+    if (Settings.canDrawOverlays(context)) return true
+    context.startActivity(
+        Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:" + context.packageName)
+        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+    )
+    return false
+}
+
 /** Pickup mode: the passenger boards, so the pickup leg is closed and the standard leg starts. */
-private fun boardPassenger(ride: Ride): Ride = ride.copy(
-    boarded = true,
-    // FIX: the closed PICKUP leg keeps its paused time, otherwise it is lost.
-    done = ride.done + Leg(LegKind.PICKUP, ride.meters, ride.seconds, ride.waitSeconds),
-    meters = 0L,
-    seconds = 0L,
-    waitSeconds = 0L
-)
+private fun boardPassenger(ride: Ride): Ride =
+    if (ride.boarded) ride else ride.copy(
+        boarded = true,
+        // FIX: the closed PICKUP leg keeps its paused time, otherwise it is lost.
+        done = ride.done + Leg(LegKind.PICKUP, ride.meters, ride.seconds, ride.waitSeconds),
+        meters = 0L,
+        seconds = 0L,
+        waitSeconds = 0L
+    )
 
 /** One simulated step of 100 m. The route follows a fixed pattern until real GPS is connected. */
 private fun addRoutePoint(ride: Ride): Ride {

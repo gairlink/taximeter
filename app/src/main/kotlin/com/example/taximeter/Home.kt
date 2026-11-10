@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.cos
@@ -43,7 +44,8 @@ fun HomeTab(
     // Average speed (km / hours) - shown small, top-right of the map.
     val speedKmh = if (hours > 0) km / hours else 0.0
     val fuelCost = km * fuelEurPerKm(tariffs)
-    val perHour = if (hours > 0) fare / hours else 0.0
+    // FIX: net profit = fare - fuel. Shown under the main fare (was €/სთ under time).
+    val netProfit = fare - fuelCost
     val waitingForClient = ride.started && ride.mode == RideMode.PICKUP && !ride.boarded
 
     val mainLabel = when {
@@ -121,9 +123,14 @@ fun HomeTab(
                 // SPEEDOMETER - exactly like Waze: SMALL, bottom-left corner.
                 // Circle 72dp, limit sign 50dp (both x1.25), sign pulled onto the circle.
                 val shownLimit = roadLimit ?: tariffs.speedLimitKmh
-                // Instant GPS speed: live fix if we have one (works even before Start),
-                // else the speed the service saved into the ride.
-                val instantSpeed = gpsFix?.speedKmh ?: ride.speedKmh
+                // FIX (speedometer shows 0 / no numbers after Start):
+                // During a ride, MainActivity builds gpsFix from the last PATH point:
+                // GpsFix(lat, lon, 10f) - PathPoint has NO speed, so speedKmh = 0.
+                // And idleTracker is stopped, so idleFix is frozen at 0 too.
+                // Before, gpsFix (0) shadowed ride.speedKmh, so the dial stuck at 0.
+                // Now: during a ride, ALWAYS use the service's speed from the ride.
+                // Before Start, use the live idle fix as before.
+                val instantSpeed = if (ride.started) ride.speedKmh else (gpsFix?.speedKmh ?: ride.speedKmh)
                 val overLimit = instantSpeed > shownLimit
                 Box(
                     Modifier.align(Alignment.BottomStart).padding(10.dp).size(100.dp)
@@ -174,7 +181,11 @@ fun HomeTab(
                             .border(8.dp, Color.Red, CircleShape)
                             .clickable {
                                 val limits = listOf(30.0, 50.0, 70.0, 90.0, 110.0, 130.0)
-                                val next = limits.firstOrNull { it > shownLimit } ?: limits.first()
+                                // FIX: cycle from the SAVED manual limit, not from shownLimit.
+                                // shownLimit = roadLimit ?: manual. If OSM roadLimit != null,
+                                // cycling from shownLimit never changed the visible value -
+                                // tap looked dead. Now next always advances from tariffs.
+                                val next = limits.firstOrNull { it > tariffs.speedLimitKmh } ?: limits.first()
                                 onSpeedLimitChange(next)
                             },
                         contentAlignment = Alignment.Center
@@ -211,22 +222,40 @@ fun HomeTab(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
-                val modeTitle = if (ride.started) " • ${ride.mode.label}" else ""
-                Text("ფასი • EUR$modeTitle", color = Muted, fontSize = 13.sp)
+                // FIX: mode label removed - user does not want "ახლობლები" etc. here.
+                Text("ფასი • EUR", color = Muted, fontSize = 13.sp)
                 Row(verticalAlignment = Alignment.Bottom) {
                     Text("€", color = Yellow, fontSize = 40.sp, fontWeight = FontWeight.Bold)
                     Text("%.2f".format(fare), color = Color.White, fontSize = 48.sp, fontWeight = FontWeight.Bold)
                 }
+                // FIX: label removed - only the amount, bigger font, single line.
+                Text("💰 €%.2f".format(netProfit), color = Green, fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             }
             Box(Modifier.width(1.dp).height(120.dp).background(GridLine))
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1.2f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                StatTile(value = "%.3f კმ".format(km), sub = "⛽ €%.2f".format(fuelCost), subColor = Muted)
-                StatTile(
-                    value = "%.1f წთ".format(ride.totalSeconds / 60.0),
-                    sub = "💰 €%.2f/სთ".format(perHour),
-                    subColor = Green
-                )
+                // FIX: StatTile replaced - its font/align live in another file.
+                // These tiles are centered + bigger. Km = 1 decimal, time = H:MM:SS.
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Tile).padding(vertical = 12.dp, horizontal = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("%.1f კმ".format(km), color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 1)
+                    Text("⛽ €%.2f".format(fuelCost), color = Muted, fontSize = 16.sp, textAlign = TextAlign.Center, maxLines = 1)
+                }
+                Column(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Tile).padding(vertical = 12.dp, horizontal = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "%d:%02d:%02d".format(
+                            ride.totalSeconds / 3600,
+                            (ride.totalSeconds % 3600) / 60,
+                            ride.totalSeconds % 60
+                        ),
+                        color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 1
+                    )
+                }
             }
         }
     }

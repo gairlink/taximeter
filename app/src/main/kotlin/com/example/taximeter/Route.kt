@@ -77,15 +77,21 @@ fun distanceMeters(a: GpsFix, b: GpsFix): Double {
  * so the distance driven during a pause is not billed.
  */
 fun applyFix(ride: Ride, anchor: GpsFix?, fix: GpsFix): Pair<Ride, GpsFix?> {
-    if (fix.accuracy > MAX_ACCURACY_M) return ride to anchor
-    if (!ride.running) return ride to fix
+    // FIX (speedometer shows no numbers after Start): NONE of the returns below
+    // ever copied fix.speedKmh into ride.speedKmh, so ride.speedKmh stayed 0
+    // forever and HomeTab (which now correctly reads ride.speedKmh during a ride)
+    // always showed 0. Speed is now saved on EVERY path, even when distance
+    // is < 5m (slow driving / stopped) or the ride is paused - the speedometer
+    // must show live speed in all those cases.
+    if (fix.accuracy > MAX_ACCURACY_M) return ride.copy(speedKmh = fix.speedKmh) to anchor
+    if (!ride.running) return ride.copy(speedKmh = fix.speedKmh) to fix
     // FIX: this line now compiles - PathPoint is (lat: Double, lon: Double, leg: Int) in Ride.kt.
     // Before, PathPoint was (x: Float, y: Float) and this was "Double, but Float was expected".
     val point = PathPoint(fix.lat, fix.lon, ride.done.size)
-    if (anchor == null) return ride.copy(path = ride.path + point) to fix
+    if (anchor == null) return ride.copy(path = ride.path + point, speedKmh = fix.speedKmh) to fix
     val d = distanceMeters(anchor, fix)
-    if (d < MIN_STEP_M) return ride to anchor
-    return ride.copy(meters = ride.meters + d.roundToLong(), path = ride.path + point) to fix
+    if (d < MIN_STEP_M) return ride.copy(speedKmh = fix.speedKmh) to anchor
+    return ride.copy(meters = ride.meters + d.roundToLong(), path = ride.path + point, speedKmh = fix.speedKmh) to fix
 }
 
 /** Receives GPS readings from the system location service, on the main thread. */

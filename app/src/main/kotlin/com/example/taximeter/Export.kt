@@ -66,16 +66,27 @@ fun expensesCsv(list: List<Expense>): String = buildString {
     }
 }
 
+private val saveCsvLock = Any()
+
 fun saveCsv(context: Context, name: String, content: String) {
-    try {
-        val dir = context.getExternalFilesDir(null) ?: context.filesDir
-        val file = File(dir, name)
-        // FIX: write UTF-8 BOM (\uFEFF) so Excel opens Georgian text correctly.
-        // Before, plain UTF-8 without BOM made Georgian mode/category text
-        // show as garbage in Excel on Windows.
-        file.writeText("\uFEFF" + content, Charsets.UTF_8)
-        Toast.makeText(context, "შენახულია: ${file.absolutePath}", Toast.LENGTH_LONG).show()
-    } catch (e: java.io.IOException) {
-        Toast.makeText(context, "CSV ვერ შეინახა", Toast.LENGTH_LONG).show()
+    // FIX: atomic + locked. Before, writeText() truncated the file directly -
+    // double-tap / kill mid-save left a half-written CSV.
+    synchronized(saveCsvLock) {
+        try {
+            val dir = context.getExternalFilesDir(null) ?: context.filesDir
+            val file = File(dir, name)
+            // FIX: write UTF-8 BOM (\uFEFF) so Excel opens Georgian text correctly.
+            // Before, plain UTF-8 without BOM made Georgian mode/category text
+            // show as garbage in Excel on Windows.
+            val tmp = File(dir, "$name.tmp")
+            tmp.writeText("\uFEFF" + content, Charsets.UTF_8)
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
+            Toast.makeText(context, "შენახულია: ${file.absolutePath}", Toast.LENGTH_LONG).show()
+        } catch (e: java.io.IOException) {
+            Toast.makeText(context, "CSV ვერ შეინახა", Toast.LENGTH_LONG).show()
+        }
     }
 }

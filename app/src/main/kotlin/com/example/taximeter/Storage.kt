@@ -38,7 +38,13 @@ class Store(context: Context) {
         root.put("tariffs", s.tariffs.toJson())
         root.put("ride", rideToJson(s.ride))
         try {
-            file.writeText(root.toString(), Charsets.UTF_8)
+            // FIX: atomic write - crash mid-save must not leave a half-written JSON.
+            val tmp = File(file.parentFile, "taxi-data.json.tmp")
+            tmp.writeText(root.toString(), Charsets.UTF_8)
+            if (!tmp.renameTo(file)) {
+                tmp.copyTo(file, overwrite = true)
+                tmp.delete()
+            }
         } catch (e: java.io.IOException) {
             // Storage is full or unavailable; the in-memory state stays correct for this run.
         }
@@ -51,10 +57,10 @@ private fun <T> JSONArray?.mapItems(f: (JSONObject) -> T): List<T> {
 }
 
 private fun legToJson(l: Leg): JSONObject =
-    JSONObject().put("kind", l.kind.name).put("meters", l.meters).put("seconds", l.seconds)
+    JSONObject().put("kind", l.kind.name).put("meters", l.meters).put("seconds", l.seconds).put("waitSeconds", l.waitSeconds)
 
 private fun legFromJson(o: JSONObject): Leg =
-    Leg(LegKind.valueOf(o.getString("kind")), o.getLong("meters"), o.getLong("seconds"))
+    Leg(LegKind.valueOf(o.getString("kind")), o.getLong("meters"), o.getLong("seconds"), o.optLong("waitSeconds", 0L))
 
 private fun pathToJson(path: List<PathPoint>): JSONArray = JSONArray().apply {
     // FIX: PathPoint is now (lat: Double, lon: Double, leg: Int), not (x: Float, y: Float).
@@ -106,19 +112,27 @@ private fun rideToJson(r: Ride): JSONObject = JSONObject()
     .put("boarded", r.boarded)
     .put("meters", r.meters)
     .put("seconds", r.seconds)
+    .put("waitSeconds", r.waitSeconds)
+    .put("speedKmh", r.speedKmh)
+    .put("running", r.running)
     .put("done", JSONArray().apply { r.done.forEach { put(legToJson(it)) } })
     .put("path", pathToJson(r.path))
 
 /** A restored ride is paused, so the timer does not run while the app is closed. */
 private fun rideFromJson(o: JSONObject): Ride = Ride(
     started = o.optBoolean("started"),
-    running = false,
+    // FIX: running must be preserved. Before it was always false on load,
+    // so a running ride became "paused" on every reopen / service restart,
+    // and the service tick (started && running) never counted again.
+    running = o.optBoolean("running", false),
     mode = RideMode.valueOf(o.optString("mode", RideMode.STANDARD.name)),
     boarded = o.optBoolean("boarded"),
     meters = o.optLong("meters"),
     seconds = o.optLong("seconds"),
+    waitSeconds = o.optLong("waitSeconds", 0L),
     done = o.optJSONArray("done").mapItems { legFromJson(it) },
-    path = pathFromJson(o.optJSONArray("path"))
+    path = pathFromJson(o.optJSONArray("path")),
+    speedKmh = o.optDouble("speedKmh", 0.0)
 )
 
 private fun expenseToJson(e: Expense): JSONObject = JSONObject()

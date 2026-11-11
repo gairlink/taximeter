@@ -30,9 +30,6 @@ data class Ride(
     val waitSeconds: Long = 0L,
     val done: List<Leg> = emptyList(),
     val path: List<PathPoint> = emptyList(),
-    // Last instant GPS speed (km/h). NOT billed - only shown on the speedometer.
-    // The service updates it on every fix; the UI polls it from the saved ride.
-    val speedKmh: Double = 0.0
 ) {
     val legKind: LegKind
         get() = when {

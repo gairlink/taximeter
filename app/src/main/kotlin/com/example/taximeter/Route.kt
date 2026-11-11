@@ -43,9 +43,8 @@ import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/** One GPS reading. [accuracy] is the radius in metres.
- * [speedKmh] = instant GPS speed (Location.speed), 0 when the chip has none. */
-data class GpsFix(val lat: Double, val lon: Double, val accuracy: Float, val speedKmh: Double = 0.0)
+/** One GPS reading. [accuracy] is the radius in metres. */
+data class GpsFix(val lat: Double, val lon: Double, val accuracy: Float)
 
 /** Readings less accurate than this are ignored. */
 private const val MAX_ACCURACY_M = 20f
@@ -77,21 +76,15 @@ fun distanceMeters(a: GpsFix, b: GpsFix): Double {
  * so the distance driven during a pause is not billed.
  */
 fun applyFix(ride: Ride, anchor: GpsFix?, fix: GpsFix): Pair<Ride, GpsFix?> {
-    // FIX (speedometer shows no numbers after Start): NONE of the returns below
-    // ever copied fix.speedKmh into ride.speedKmh, so ride.speedKmh stayed 0
-    // forever and HomeTab (which now correctly reads ride.speedKmh during a ride)
-    // always showed 0. Speed is now saved on EVERY path, even when distance
-    // is < 5m (slow driving / stopped) or the ride is paused - the speedometer
-    // must show live speed in all those cases.
-    if (fix.accuracy > MAX_ACCURACY_M) return ride.copy(speedKmh = fix.speedKmh) to anchor
-    if (!ride.running) return ride.copy(speedKmh = fix.speedKmh) to fix
+    if (fix.accuracy > MAX_ACCURACY_M) return ride to anchor
+    if (!ride.running) return ride to fix
     // FIX: this line now compiles - PathPoint is (lat: Double, lon: Double, leg: Int) in Ride.kt.
     // Before, PathPoint was (x: Float, y: Float) and this was "Double, but Float was expected".
     val point = PathPoint(fix.lat, fix.lon, ride.done.size)
-    if (anchor == null) return ride.copy(path = ride.path + point, speedKmh = fix.speedKmh) to fix
+    if (anchor == null) return ride.copy(path = ride.path + point) to fix
     val d = distanceMeters(anchor, fix)
-    if (d < MIN_STEP_M) return ride.copy(speedKmh = fix.speedKmh) to anchor
-    return ride.copy(meters = ride.meters + d.roundToLong(), path = ride.path + point, speedKmh = fix.speedKmh) to fix
+    if (d < MIN_STEP_M) return ride to anchor
+    return ride.copy(meters = ride.meters + d.roundToLong(), path = ride.path + point) to fix
 }
 
 /** Receives GPS readings from the system location service, on the main thread. */
@@ -100,10 +93,7 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
-            // Instant speed from the GPS chip (m/s -> km/h). hasSpeed() guards
-            // chips that report no speed - those give 0, not a stale value.
-            val speed = if (location.hasSpeed()) (location.speed * 3.6).coerceAtLeast(0.0) else 0.0
-            onFix(GpsFix(location.latitude, location.longitude, location.accuracy, speed))
+            onFix(GpsFix(location.latitude, location.longitude, location.accuracy))
         }
 
         // FIX: onStatusChanged removed - it is deprecated in LocationListener and was empty.
@@ -123,8 +113,7 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
             val last = manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)
                 ?: manager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
             if (last != null) {
-                val speed = if (last.hasSpeed()) (last.speed * 3.6).coerceAtLeast(0.0) else 0.0
-                onFix(GpsFix(last.latitude, last.longitude, last.accuracy, speed))
+                onFix(GpsFix(last.latitude, last.longitude, last.accuracy))
             }
         } catch (e: Exception) { /* no last location yet - wait for the first update */ }
         if (manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
@@ -300,9 +289,7 @@ fun RouteMap(path: List<PathPoint>, legs: List<Leg>, modifier: Modifier) {
                 }
             }
         }
-        // Current zoom, bottom-RIGHT now (was bottom-left) - the speedometer
-        // + limit sign live in the bottom-left corner, so the zoom label moved
-        // here to stop them overlapping during a ride.
+        // Current zoom, bottom-RIGHT.
         androidx.compose.material3.Text(
             "🔍 %.1fx".format(zoom),
             color = Muted,

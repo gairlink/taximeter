@@ -28,10 +28,6 @@ fun HomeTab(
     tariffs: Tariffs,
     // gpsFix has a DEFAULT (null), so both old and new MainActivity calls compile.
     gpsFix: GpsFix? = null,
-    // Real road limit from OSM (null -> use the manual limit from tariffs).
-    roadLimit: Double? = null,
-    // Tapping the limit sign cycles 30/50/70/90/110/130 and saves it to tariffs.
-    onSpeedLimitChange: (Double) -> Unit = {},
     onStart: () -> Unit,
     onBoard: () -> Unit,
     onToggleRun: () -> Unit,
@@ -40,9 +36,6 @@ fun HomeTab(
 ) {
     val fare = ride.fare(tariffs)
     val km = ride.totalMeters / 1000.0
-    val hours = ride.totalSeconds / 3600.0
-    // Average speed (km / hours) - shown small, top-right of the map.
-    val speedKmh = if (hours > 0) km / hours else 0.0
     val fuelCost = km * fuelEurPerKm(tariffs)
     // FIX: net profit = fare - fuel. Shown under the main fare (was €/სთ under time).
     val netProfit = fare - fuelCost
@@ -114,85 +107,6 @@ fun HomeTab(
                     fontSize = 12.sp,
                     modifier = Modifier.align(Alignment.TopStart).padding(10.dp)
                 )
-                Text(
-                    "%.1f კმ/სთ".format(speedKmh),
-                    color = Muted,
-                    fontSize = 12.sp,
-                    modifier = Modifier.align(Alignment.TopEnd).padding(10.dp)
-                )
-                // SPEEDOMETER - exactly like Waze: SMALL, bottom-left corner.
-                // Circle 72dp, limit sign 50dp (both x1.25), sign pulled onto the circle.
-                val shownLimit = roadLimit ?: tariffs.speedLimitKmh
-                // FIX (speedometer shows 0 / no numbers after Start):
-                // During a ride, MainActivity builds gpsFix from the last PATH point:
-                // GpsFix(lat, lon, 10f) - PathPoint has NO speed, so speedKmh = 0.
-                // And idleTracker is stopped, so idleFix is frozen at 0 too.
-                // Before, gpsFix (0) shadowed ride.speedKmh, so the dial stuck at 0.
-                // Now: during a ride, ALWAYS use the service's speed from the ride.
-                // Before Start, use the live idle fix as before.
-                val instantSpeed = if (ride.started) ride.speedKmh else (gpsFix?.speedKmh ?: ride.speedKmh)
-                val overLimit = instantSpeed > shownLimit
-                Box(
-                    Modifier.align(Alignment.BottomStart).padding(10.dp).size(100.dp)
-                ) {
-                    // Dark speed circle, bottom-left. Circle = 72dp.
-                    Box(
-                        Modifier.size(72.dp).align(Alignment.BottomStart)
-                            .clip(CircleShape).background(Color(0xFF1E1E1E)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        // Segmented ring: tick marks around the edge, like Waze.
-                        // Red when over the limit, grey otherwise.
-                        Canvas(Modifier.fillMaxSize()) {
-                            val cx = size.width / 2
-                            val cy = size.height / 2
-                            val outerR = size.minDimension / 2 - 0.5.dp.toPx()
-                            val innerR = outerR - 2.5.dp.toPx()
-                            val tickColor = if (overLimit) Color.Red else Color(0xFF777777)
-                            for (deg in 0 until 360 step 9) {
-                                val rad = deg * Math.PI / 180.0
-                                val x1 = cx + (innerR * cos(rad)).toFloat()
-                                val y1 = cy + (innerR * sin(rad)).toFloat()
-                                val x2 = cx + (outerR * cos(rad)).toFloat()
-                                val y2 = cy + (outerR * sin(rad)).toFloat()
-                                drawLine(tickColor, Offset(x1, y1), Offset(x2, y2), strokeWidth = 2.5.dp.toPx())
-                            }
-                        }
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                "%.0f".format(instantSpeed),
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 30.sp
-                            )
-                            Text("კმ/სთ", color = Color.White, fontSize = 11.sp)
-                        }
-                    }
-                    // Limit sign overlapping the top-right edge of the circle.
-                    // Sign = 50dp, pulled 5dp left + 5dp down onto the circle.
-                    // Thin white rim outside the thick red ring, like the road sign.
-                    // Tap to cycle 30/50/70/90/110/130.
-                    Box(
-                        Modifier.size(50.dp).align(Alignment.TopEnd)
-                            .offset(x = (-5).dp, y = 5.dp)
-                            .clip(CircleShape).background(Color.White)
-                            .padding(1.dp)
-                            .clip(CircleShape).background(Color.White)
-                            .border(8.dp, Color.Red, CircleShape)
-                            .clickable {
-                                val limits = listOf(30.0, 50.0, 70.0, 90.0, 110.0, 130.0)
-                                // FIX: cycle from the SAVED manual limit, not from shownLimit.
-                                // shownLimit = roadLimit ?: manual. If OSM roadLimit != null,
-                                // cycling from shownLimit never changed the visible value -
-                                // tap looked dead. Now next always advances from tariffs.
-                                val next = limits.firstOrNull { it > tariffs.speedLimitKmh } ?: limits.first()
-                                onSpeedLimitChange(next)
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("%.0f".format(shownLimit), color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    }
-                }
             }
         }
 
@@ -249,9 +163,9 @@ fun HomeTab(
                 ) {
                     Text(
                         "%d:%02d:%02d".format(
-                            ride.totalSeconds / 3600,
-                            (ride.totalSeconds % 3600) / 60,
-                            ride.totalSeconds % 60
+                            (ride.totalSeconds + ride.totalWaitSeconds) / 3600,
+                            ((ride.totalSeconds + ride.totalWaitSeconds) % 3600) / 60,
+                            (ride.totalSeconds + ride.totalWaitSeconds) % 60
                         ),
                         color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, maxLines = 1
                     )

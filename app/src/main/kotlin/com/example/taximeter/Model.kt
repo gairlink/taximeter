@@ -24,10 +24,6 @@ data class Tariffs(
     // less than this. Old saved files have no "minFare" key, so they get
     // the default 10.0 here.
     val minFare: Double = 10.0,
-    // Speed limit shown on the map (km/h). No live limit data source, so it is
-    // set by tapping the limit sign on the map (30/50/70/90/110/130). Old saved
-    // files have no key -> default 50 (city limit).
-    val speedLimitKmh: Double = 50.0,
     val friendPerKm: Double = 0.35,
     val friendWaitPerMinute: Double = 0.0,
     val friendBoarding: Double = 0.0,
@@ -47,7 +43,6 @@ fun Tariffs.toMap(): Map<String, String> = mapOf(
     "waitPerMinute" to waitPerMinute.toString(),
     "boarding" to boarding.toString(),
     "minFare" to minFare.toString(),
-    "speedLimitKmh" to speedLimitKmh.toString(),
     "friendPerKm" to friendPerKm.toString(),
     "friendWaitPerMinute" to friendWaitPerMinute.toString(),
     "friendBoarding" to friendBoarding.toString(),
@@ -68,7 +63,6 @@ fun tariffsFromMap(m: Map<String, String?>, old: Tariffs): Tariffs = Tariffs(
     waitPerMinute = parseEur(m["waitPerMinute"], old.waitPerMinute),
     boarding = parseEur(m["boarding"], old.boarding),
     minFare = parseEur(m["minFare"], old.minFare),
-    speedLimitKmh = parseEur(m["speedLimitKmh"], old.speedLimitKmh),
     friendPerKm = parseEur(m["friendPerKm"], old.friendPerKm),
     friendWaitPerMinute = parseEur(m["friendWaitPerMinute"], old.friendWaitPerMinute),
     friendBoarding = parseEur(m["friendBoarding"], old.friendBoarding),

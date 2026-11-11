@@ -100,7 +100,6 @@ class MainActivity : ComponentActivity() {
                                 meters = maxOf(snap.ride.meters, fileRide.meters),
                                 seconds = if ((fileRide.seconds + fileRide.waitSeconds) >= (snap.ride.seconds + snap.ride.waitSeconds)) fileRide.seconds else snap.ride.seconds,
                                 waitSeconds = if ((fileRide.seconds + fileRide.waitSeconds) >= (snap.ride.seconds + snap.ride.waitSeconds)) fileRide.waitSeconds else snap.ride.waitSeconds,
-                                speedKmh = fileRide.speedKmh,
                                 path = if (fileRide.path.size >= snap.ride.path.size) fileRide.path else snap.ride.path,
                                 // Local flags are the truth for start/board/mode/done,
                                 // but running must follow the file if service is counting:
@@ -184,10 +183,6 @@ fun TaxiProScreen(
     // NOW: while NO ride is running, this screen runs a light idle tracker just to
     // warm up GPS + show the green dot. When a ride starts, the idle tracker stops
     // and the service takes over (no double counting - only one tracker at a time).
-    // Real road limit from OpenStreetMap (null = no data / offline -> manual limit).
-    var roadLimit by remember { mutableStateOf<Double?>(null) }
-    // Throttle: only ask Overpass when the car moved > 100 m and 15 s passed.
-    var lastLimitQuery by remember { mutableStateOf<Pair<GpsFix, Long>?>(null) }
     var idleFix by remember { mutableStateOf<GpsFix?>(null) }
     var waitingForGps by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -203,27 +198,8 @@ fun TaxiProScreen(
     // NOTHING made the dot go red again ("GPS-ის ძებნა…") right after Start.
     // Keep the last idle fix until the first route point arrives.
     val gpsFix: GpsFix? = if (ride.started) {
-        ride.path.lastOrNull()?.let { GpsFix(it.lat, it.lon, 10f, ride.speedKmh) } ?: idleFix
+        ride.path.lastOrNull()?.let { GpsFix(it.lat, it.lon, 10f) } ?: idleFix
     } else idleFix
-
-    // Road limit lookup: runs when the car moved > 100 m since the last lookup
-    // and 15 s passed. A failed lookup (offline / no tagged road) keeps the
-    // previous value - HomeTab falls back to the manual limit when it is null.
-    LaunchedEffect(gpsFix) {
-        val fix = gpsFix ?: return@LaunchedEffect
-        val last = lastLimitQuery
-        val now = System.currentTimeMillis()
-        val movedFar = last == null || distanceMeters(last.first, fix) > 100.0
-        if (movedFar && (last == null || now - last.second > 15000)) {
-            lastLimitQuery = fix to now
-            launch {
-                val fetched = fetchRoadSpeedLimit(fix.lat, fix.lon)
-                // Only accept a result for the location we asked about: if the
-                // car already moved on, the next lookup will handle it.
-                if (fetched != null) roadLimit = fetched
-            }
-        }
-    }
 
     // Gate: "don't start until GPS is on". When the user taps Start while there is
     // no fix yet, we show the progress overlay and wait. As soon as a fix arrives,
@@ -265,7 +241,6 @@ fun TaxiProScreen(
                 if (t0 >= l0) ride = ride.copy(
                     meters = maxOf(ride.meters, fresh0.meters),
                     seconds = fresh0.seconds, waitSeconds = fresh0.waitSeconds,
-                    speedKmh = fresh0.speedKmh,
                     path = if (fresh0.path.size >= ride.path.size) fresh0.path else ride.path
                 )
             }
@@ -294,12 +269,8 @@ fun TaxiProScreen(
                 val newSeconds = if (freshTotal >= localTotal) fresh.seconds else ride.seconds
                 val newWait = if (freshTotal >= localTotal) fresh.waitSeconds else ride.waitSeconds
                 val newPath = if (fresh.path.size >= ride.path.size) fresh.path else ride.path
-                // FIX: sync speed too. Before, the poll copied meters/seconds/path
-                // but NOT speedKmh - so the UI ride's speed stayed 0 forever and
-                // the speedometer showed 0 during the whole ride.
-                val newSpeed = fresh.speedKmh
-                if (newMeters != ride.meters || newSeconds != ride.seconds || newWait != ride.waitSeconds || newPath !== ride.path || newSpeed != ride.speedKmh) {
-                    ride = ride.copy(meters = newMeters, seconds = newSeconds, waitSeconds = newWait, speedKmh = newSpeed, path = newPath)
+                if (newMeters != ride.meters || newSeconds != ride.seconds || newWait != ride.waitSeconds || newPath !== ride.path) {
+                    ride = ride.copy(meters = newMeters, seconds = newSeconds, waitSeconds = newWait, path = newPath)
                 }
             }
         }
@@ -328,10 +299,6 @@ fun TaxiProScreen(
                     running = ride.running,
                     tariffs = tariffs,
                     gpsFix = gpsFix,
-                    // Tapping the limit sign on the map: save it, it persists.
-                    onSpeedLimitChange = { tariffs = tariffs.copy(speedLimitKmh = it) },
-                    // Real road limit from OSM (null -> manual limit from tariffs).
-                    roadLimit = roadLimit,
                     onStart = {
                         // One-time: the bubble needs "Draw over other apps". If it is not
                         // granted yet, open Settings - the user grants it once and taps

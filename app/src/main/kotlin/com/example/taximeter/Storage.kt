@@ -113,7 +113,6 @@ private fun rideToJson(r: Ride): JSONObject = JSONObject()
     .put("meters", r.meters)
     .put("seconds", r.seconds)
     .put("waitSeconds", r.waitSeconds)
-    .put("speedKmh", r.speedKmh)
     .put("running", r.running)
     .put("done", JSONArray().apply { r.done.forEach { put(legToJson(it)) } })
     .put("path", pathToJson(r.path))
@@ -132,7 +131,6 @@ private fun rideFromJson(o: JSONObject): Ride = Ride(
     waitSeconds = o.optLong("waitSeconds", 0L),
     done = o.optJSONArray("done").mapItems { legFromJson(it) },
     path = pathFromJson(o.optJSONArray("path")),
-    speedKmh = o.optDouble("speedKmh", 0.0)
 )
 
 private fun expenseToJson(e: Expense): JSONObject = JSONObject()

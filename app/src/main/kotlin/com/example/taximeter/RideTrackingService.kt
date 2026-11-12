@@ -77,6 +77,11 @@ class RideTrackingService : Service() {
     private var tracker: GpsTracker? = null
     private var anchor: GpsFix? = null
     private val lock = Any()
+    // AUTO-WAIT state: when the car stands still, after 30s the timer switches
+    // from driving (seconds) to waiting (waitSeconds). Reset on movement / new ride.
+    private var lastSeenMeters: Long = -1
+    private var stillSinceMs: Long = 0
+    private var autoWaiting: Boolean = false
     // Overlay (bubble) - the blue pill on the home screen: "💰 0.00 € | 📏 0.002 კმ"
     private var windowManager: WindowManager? = null
     private var overlayView: TextView? = null
@@ -87,7 +92,36 @@ class RideTrackingService : Service() {
                 val snap = store.load()
                 val ride = snap.ride
                 if (ride.started && ride.running) {
-                    store.save(snap.copy(ride = ride.copy(seconds = ride.seconds + 1)))
+                    val now = System.currentTimeMillis()
+                    // First tick (or after restart): initialise still-timer.
+                    if (lastSeenMeters < 0) {
+                        lastSeenMeters = ride.meters
+                        stillSinceMs = now
+                        autoWaiting = false
+                    }
+                    if (ride.meters != lastSeenMeters) {
+                        // Car moved: auto-wait ends, back to driving time.
+                        lastSeenMeters = ride.meters
+                        stillSinceMs = now
+                        autoWaiting = false
+                        store.save(snap.copy(ride = ride.copy(seconds = ride.seconds + 1)))
+                    } else if (!autoWaiting && now - stillSinceMs >= AUTO_WAIT_SECONDS * 1000L) {
+                        // Stood still for 30s: the last 30s were counted as driving,
+                        // move them to waiting (total time unchanged) + this second as waiting.
+                        // This is the moment auto-wait TURNS ON.
+                        val moved = minOf(30L, ride.seconds)
+                        store.save(snap.copy(ride = ride.copy(
+                            seconds = ride.seconds - moved,
+                            waitSeconds = ride.waitSeconds + moved + 1
+                        )))
+                        autoWaiting = true
+                    } else if (autoWaiting) {
+                        // Still standing: every second is waiting, not driving.
+                        store.save(snap.copy(ride = ride.copy(waitSeconds = ride.waitSeconds + 1)))
+                    } else {
+                        // Still standing but < 30s: still driving time, not waiting yet.
+                        store.save(snap.copy(ride = ride.copy(seconds = ride.seconds + 1)))
+                    }
                     updateNotification(store.load())
                     updateOverlay()
                 }
@@ -128,6 +162,10 @@ class RideTrackingService : Service() {
                 return START_STICKY
             }
         }
+        // Fresh start: auto-wait must not inherit the previous ride's still-timer.
+        lastSeenMeters = -1
+        stillSinceMs = 0
+        autoWaiting = false
         startForeground(NOTIF_ID, buildNotification(store.load()))
         // Anchor: resume from the last saved route point, so the first fix after
         // a service restart does not count a jump from (0,0) / a stale point.
@@ -210,7 +248,15 @@ class RideTrackingService : Service() {
                 @Suppress("DEPRECATION") WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                // FIX: screen stays ON while the bubble is visible (app minimised).
+                // MainActivity's view.keepScreenOn only works while the Activity
+                // is visible - once minimised it does nothing, so the screen timed
+                // out even though the ride + bubble were still active. This flag
+                // lives on the overlay window itself, so it works while minimised.
+                // When the bubble hides (hideOverlay removes the view), the flag
+                // goes away with it and the screen can sleep normally again.
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
             PixelFormat.TRANSLUCENT
         ).apply {
             // FIX: first position = TOP-RIGHT corner (was CENTER_HORIZONTAL)

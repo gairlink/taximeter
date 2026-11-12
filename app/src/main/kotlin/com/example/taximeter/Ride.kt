@@ -179,3 +179,25 @@ data class Expense(val id: Long, val time: Long, val category: String, val amoun
 
 /** Fuel cost per km: liters per 100 km divided by 100, times the price per liter. */
 fun fuelEurPerKm(t: Tariffs): Double = t.fuelLitersPer100Km / 100.0 * t.fuelPricePerLiter
+/** One archived month: ALL trips + expenses of that month, frozen at archive time. */
+data class MonthlyArchive(
+    val year: Int,
+    val month: Int, // 1..12
+    val trips: List<Trip> = emptyList(),
+    val expenses: List<Expense> = emptyList()
+) {
+    val tripCount: Int get() = trips.size
+    val totalKm: Double get() = trips.sumOf { it.km }
+    val totalFare: Double get() = trips.sumOf { it.fare }
+    val totalFuel: Double get() = trips.sumOf { it.fuel }
+    val totalExpenses: Double get() = expenses.sumOf { it.amount }
+    val totalProfit: Double get() = totalFare - totalFuel - totalExpenses
+    val totalSeconds: Long get() = trips.sumOf { trip -> trip.legs.sumOf { it.seconds + it.waitSeconds } }
+    val label: String get() = "${monthName(month)} $year"
+}
+
+private fun monthName(month: Int): String = when (month) {
+    1 -> "იანვარი"; 2 -> "თებერვალი"; 3 -> "მარტი"; 4 -> "აპრილი"
+    5 -> "მაისი"; 6 -> "ივნისი"; 7 -> "ივლისი"; 8 -> "აგვისტო"
+    9 -> "სექტემბერი"; 10 -> "ოქტომბერი"; 11 -> "ნოემბერი"; else -> "დეკემბერი"
+}

@@ -9,7 +9,8 @@ data class Snapshot(
     val trips: List<Trip>,
     val expenses: List<Expense>,
     val tariffs: Tariffs,
-    val ride: Ride = Ride()
+    val ride: Ride = Ride(),
+    val archives: List<MonthlyArchive> = emptyList()
 )
 
 /** Keeps trips, expenses, tariffs and the unfinished ride in one JSON file in private storage. */
@@ -24,7 +25,8 @@ class Store(context: Context) {
                 trips = root.optJSONArray("trips").mapItems { tripFromJson(it) },
                 expenses = root.optJSONArray("expenses").mapItems { expenseFromJson(it) },
                 tariffs = root.optJSONObject("tariffs")?.let { tariffsFromJson(it) } ?: Tariffs(),
-                ride = root.optJSONObject("ride")?.let { rideFromJson(it) } ?: Ride()
+                ride = root.optJSONObject("ride")?.let { rideFromJson(it) } ?: Ride(),
+                archives = root.optJSONArray("archives").mapItems { archiveFromJson(it) }
             )
         } catch (e: Exception) {
             Snapshot(emptyList(), emptyList(), Tariffs())
@@ -37,6 +39,7 @@ class Store(context: Context) {
         root.put("expenses", JSONArray().apply { s.expenses.forEach { put(expenseToJson(it)) } })
         root.put("tariffs", s.tariffs.toJson())
         root.put("ride", rideToJson(s.ride))
+        root.put("archives", JSONArray().apply { s.archives.forEach { put(archiveToJson(it)) } })
         try {
             // FIX: atomic write - crash mid-save must not leave a half-written JSON.
             val tmp = File(file.parentFile, "taxi-data.json.tmp")
@@ -147,3 +150,66 @@ private fun expenseFromJson(o: JSONObject): Expense = Expense(
     amount = o.getDouble("amount"),
     note = o.optString("note")
 )
+
+private fun archiveToJson(a: MonthlyArchive): JSONObject = JSONObject()
+    .put("year", a.year)
+    .put("month", a.month)
+    .put("trips", JSONArray().apply { a.trips.forEach { put(tripToJson(it)) } })
+    .put("expenses", JSONArray().apply { a.expenses.forEach { put(expenseToJson(it)) } })
+
+private fun archiveFromJson(o: JSONObject): MonthlyArchive = MonthlyArchive(
+    year = o.optInt("year"),
+    month = o.optInt("month"),
+    trips = o.optJSONArray("trips").mapItems { tripFromJson(it) },
+    expenses = o.optJSONArray("expenses").mapItems { expenseFromJson(it) }
+)
+
+/**
+ * AUTO-ARCHIVE: moves every COMPLETED month into [Snapshot.archives].
+ * Runs on every app open. A month is completed when it is before the current
+ * calendar month - so on the 1st of a new month the whole previous month is
+ * archived at once. No 30/31 confusion: month boundaries come from Calendar,
+ * not from counting days. If the app was not opened on the 1st, the previous
+ * month is still before the current month, so it archives on the next open.
+ * Already-archived months are merged, never duplicated. The current month
+ * (and an in-progress ride) is never touched.
+ */
+fun archiveCompletedMonths(snap: Snapshot, now: Long): Snapshot {
+    val cal = java.util.Calendar.getInstance().apply { timeInMillis = now }
+    val curYear = cal.get(java.util.Calendar.YEAR)
+    val curMonth = cal.get(java.util.Calendar.MONTH) + 1
+    fun ym(time: Long): Pair<Int, Int> {
+        val c = java.util.Calendar.getInstance().apply { timeInMillis = time }
+        return c.get(java.util.Calendar.YEAR) to (c.get(java.util.Calendar.MONTH) + 1)
+    }
+    val isCompleted = { time: Long ->
+        val (y, m) = ym(time)
+        y < curYear || (y == curYear && m < curMonth)
+    }
+    val oldTrips = snap.trips.filter { isCompleted(it.time) }
+    val oldExpenses = snap.expenses.filter { isCompleted(it.time) }
+    if (oldTrips.isEmpty() && oldExpenses.isEmpty()) return snap
+    // Group old data by month, merge into existing archives if present.
+    val archives = snap.archives.toMutableList()
+    val months = (oldTrips.map { ym(it.time) } + oldExpenses.map { ym(it.time) }).distinct()
+    for ((y, m) in months) {
+        val mTrips = oldTrips.filter { ym(it.time) == (y to m) }
+        val mExpenses = oldExpenses.filter { ym(it.time) == (y to m) }
+        val idx = archives.indexOfFirst { it.year == y && it.month == m }
+        if (idx >= 0) {
+            val old = archives[idx]
+            val mergedTrips = (old.trips + mTrips).distinctBy { it.id }
+            val mergedExpenses = (old.expenses + mExpenses).distinctBy { it.id }
+            archives[idx] = old.copy(trips = mergedTrips, expenses = mergedExpenses)
+        } else {
+            archives.add(MonthlyArchive(year = y, month = m, trips = mTrips, expenses = mExpenses))
+        }
+    }
+    val keptTrips = snap.trips.filterNot { isCompleted(it.time) }
+    val keptExpenses = snap.expenses.filterNot { isCompleted(it.time) }
+    return snap.copy(
+        trips = keptTrips,
+        expenses = keptExpenses,
+        archives = archives.sortedWith(compareByDescending<MonthlyArchive> { it.year }.thenByDescending { it.month })
+    )
+}

@@ -67,7 +67,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         hideStatusBar()
         val store = Store(this)
-        val initial = store.load()
+        // AUTO-ARCHIVE on open: if a whole month finished since last open,
+        // move it to archives now (see archiveCompletedMonths in Storage.kt).
+        val loaded = store.load()
+        val initial = archiveCompletedMonths(loaded, System.currentTimeMillis())
+        if (initial != loaded) store.save(initial)
         // Bubble visibility is tied to the Activity lifecycle, NOT to the service:
         // minimised (onPause) -> bubble appears, back in the app (onResume) -> bubble hides.
         // The service keeps counting in both cases.
@@ -160,6 +164,9 @@ fun TaxiProScreen(
     var initialSyncDone by remember { mutableStateOf(!initial.ride.started) }
     val trips = remember { mutableStateListOf<Trip>().apply { addAll(initial.trips) } }
     val expenses = remember { mutableStateListOf<Expense>().apply { addAll(initial.expenses) } }
+    // Archives are read-only history: they are saved with every snapshot,
+    // but never edited from the UI. Archived on open (see onCreate).
+    val archives = remember { mutableStateListOf<MonthlyArchive>().apply { addAll(initial.archives) } }
     var tariffs by remember { mutableStateOf(initial.tariffs) }
     var tab by remember { mutableIntStateOf(0) }
     var period by remember { mutableStateOf(Period.TODAY) }
@@ -219,7 +226,7 @@ fun TaxiProScreen(
 
     // Saves after every change, including the unfinished ride, so nothing is lost on restart.
     // FIX: gated by initialSyncDone (see above) - never save before the first sync.
-    val snapshot = Snapshot(trips.toList(), expenses.toList(), tariffs, ride)
+    val snapshot = Snapshot(trips.toList(), expenses.toList(), tariffs, ride, archives.toList())
     LaunchedEffect(snapshot) { if (initialSyncDone) onSave(snapshot) }
 
     // Poll the saved ride: picks up the km/seconds/path the SERVICE counted
@@ -335,7 +342,7 @@ fun TaxiProScreen(
                             // service tick / polling could re-save the OLD started
                             // ride to the file, and the ride came back to life.
                             // Now the finished state is written before stop().
-                            store.save(Snapshot(trips.toList(), expenses.toList(), tariffs, Ride()))
+                            store.save(Snapshot(trips.toList(), expenses.toList(), tariffs, Ride(), archives.toList()))
                             // Stop background counting - the ride is over.
                             RideTrackingService.stop(context)
                         }
@@ -360,11 +367,10 @@ fun TaxiProScreen(
                     onPeriodChange = { period = it },
                     onAdd = { category, amount, note ->
                         expenses.add(Expense(System.nanoTime(), System.currentTimeMillis(), category, amount, note))
-                    }
+                    },
+                    onDelete = { ex -> expenses.removeAll { it.id == ex.id } }
                 )
-                else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("📦 მალე", color = Muted, fontSize = 18.sp)
-                }
+                else -> ArchiveTab(archives = archives)
             }
         }
         // Bottom navigation - like before: Home / History / Stats / Expenses / Box
@@ -494,6 +500,62 @@ private fun TopBar(rideActive: Boolean, onTariffClick: () -> Unit) {
         IconTile("€", onClick = onTariffClick)
         Spacer(Modifier.width(8.dp))
         Text("☀", color = if (rideActive) Yellow else Muted, fontSize = 26.sp)
+    }
+}
+
+/** Archive tab (last tab, 📦): one card per archived month, tap to expand. */
+@Composable
+private fun ArchiveTab(archives: List<MonthlyArchive>) {
+    var open by remember { mutableStateOf<MonthlyArchive?>(null) }
+    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("📦 არქივი", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+        Text(
+            "ყოველი თვის 1 რიცხვში წინა თვის ყველა მგზავრობა + ხარჯი ავტომატურად ინახება აქ. მიმდინარე თვე არ არქივდება.",
+            color = Muted, fontSize = 13.sp
+        )
+        if (archives.isEmpty()) {
+            Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg).padding(20.dp), contentAlignment = Alignment.Center) {
+                Text("არქივი ცარიელია — პირველი თვე თვის ბოლოს შეინახება.", color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
+            }
+        } else {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                archives.forEach { a ->
+                    val expanded = open == a
+                    Column(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)).background(CardBg)
+                            .clickable { open = if (expanded) null else a }
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(a.label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Spacer(Modifier.weight(1f))
+                            Text(if (expanded) "▲" else "▼", color = Muted, fontSize = 12.sp)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            MiniStat("მგზავრები", "${a.tripCount}", Color.White, "", Modifier.weight(1f))
+                            MiniStat("შემოსავალი", "€%.2f".format(a.totalFare), Yellow, "", Modifier.weight(1f))
+                            MiniStat("მოგება", "€%.2f".format(a.totalProfit), Green, "", Modifier.weight(1f))
+                        }
+                        if (expanded) {
+                            Text("კმ: %.1f • საწვავი: €%.2f • ხარჯები: €%.2f • დრო: %d:%02d".format(a.totalKm, a.totalFuel, a.totalExpenses, a.totalSeconds / 3600, (a.totalSeconds % 3600) / 60), color = Muted, fontSize = 12.sp)
+                            if (a.trips.isNotEmpty()) {
+                                Text("მგზავრობები:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                a.trips.sortedByDescending { it.time }.forEach { t ->
+                                    Text("${fmtDate(t.time)} • ${t.mode.label} • %.3f კმ • €%.2f".format(t.km, t.fare), color = Color.White, fontSize = 12.sp)
+                                }
+                            }
+                            if (a.expenses.isNotEmpty()) {
+                                Text("ხარჯები:", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                a.expenses.sortedByDescending { it.time }.forEach { e ->
+                                    Text("${fmtDate(e.time)} • ${e.category} • €%.2f${if (e.note.isNotEmpty()) " • ${e.note}" else ""}".format(e.amount), color = Color.White, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -918,13 +980,16 @@ private fun ExpensesTab(
     expenses: List<Expense>,
     period: Period,
     onPeriodChange: (Period) -> Unit,
-    onAdd: (String, Double, String) -> Unit
+    onAdd: (String, Double, String) -> Unit,
+    onDelete: (Expense) -> Unit = {}
 ) {
     val start = periodStart(period)
     val list = expenses.filter { it.time >= start }.sortedByDescending { it.time }
     val total = list.sumOf { it.amount }
     val fuelTotal = list.filter { it.category == CATEGORIES[0] }.sumOf { it.amount }
     val repairTotal = list.filter { it.category == CATEGORIES[1] }.sumOf { it.amount }
+    // Pending delete: shows the confirm dialog below. Same pattern as HistoryTab.
+    var pendingDelete by remember { mutableStateOf<Expense?>(null) }
     var category by remember { mutableStateOf(CATEGORIES[0]) }
     var categoryExpanded by remember { mutableStateOf(false) }
     var amountText by remember { mutableStateOf("") }
@@ -1022,10 +1087,41 @@ private fun ExpensesTab(
                         Text(fmtDateTime(ex.time), color = Muted, fontSize = 12.sp)
                     }
                     Text("€%.2f".format(ex.amount), color = Red, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Spacer(Modifier.width(8.dp))
+                    Box(
+                        Modifier.size(32.dp).clip(CircleShape).background(Tile).clickable { pendingDelete = ex },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("✕", color = Red, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
                 }
             }
             // FIX: ზედა ზოლი + CSV + წაშლა წაშლილია (სქრინზე მონიშნული იყო).
         }
+    }
+    // Confirm before deleting - a stray tap on ✕ must not erase an expense.
+    pendingDelete?.let { ex ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("ხარჯის წაშლა?", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "${ex.category}${if (ex.note.isNotEmpty()) " • ${ex.note}" else ""} • ${fmtDateTime(ex.time)}\n€%.2f".format(ex.amount),
+                    color = Muted
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onDelete(ex); pendingDelete = null }) {
+                    Text("✕ წაშლა", color = Red, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("გაუქმება", color = Color.White)
+                }
+            },
+            containerColor = CardBg
+        )
     }
 }
 

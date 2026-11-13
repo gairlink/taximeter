@@ -21,7 +21,7 @@ import kotlinx.coroutines.launch
 
 private data class TariffField(val key: String, val label: String)
 
-/** Bottom sheet with the tariff, fuel and wear settings. Edits stay as text until saved. */
+/** Bottom sheet with the tariff and fuel settings. (FIX #20: wear no longer exists.) Edits stay as text until saved. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TariffSheet(
@@ -73,7 +73,10 @@ fun TariffSheet(
                     TariffField("km5to15", "5-15კმ €/კმ"),
                     TariffField("km15plus", "15+კმ €/კმ"),
                     TariffField("waitPerMinute", "ლოდინი €/წთ"),
-                    TariffField("boarding", "ჩაჯდომა €")
+                    TariffField("boarding", "ჩაჯდომა €"),
+                    // FIX #4: minFare was in Tariffs but had NO input, so it could never
+                    // be changed from 10€. Now it is editable like every other tariff.
+                    TariffField("minFare", "მინ. ტარიფი €")
                     // FIX: phantom free-wait field removed - it was never saved.
                 ))
             }

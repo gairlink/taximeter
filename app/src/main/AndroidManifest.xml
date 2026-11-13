@@ -20,8 +20,9 @@
 
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!-- FIX #16: allowBackup=false - backup/restore could resurrect an old taxi-data.json and overwrite new history -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

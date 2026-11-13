@@ -92,6 +92,8 @@ fun RoutePreview(path: List<PathPoint>, legs: List<Leg>, modifier: Modifier) {
                 (c.y - ((pt.lat - cLat) * 111320.0).toFloat() * pxPerM + pan.y)
             )
             path.indices.groupBy { path[it].leg }.forEach { (leg, idx) ->
+                // FIX #19: 1-point leg drew nothing - draw a dot.
+                if (idx.size == 1) { drawCircle(legColor(legs.getOrNull(leg)?.kind), radius = 5f, center = toScreen(path[idx[0]])); return@forEach }
                 if (idx.size < 2) return@forEach
                 val line = Path()
                 idx.forEachIndexed { i, k ->
@@ -171,7 +173,7 @@ fun TripDetailSheet(trip: Trip, onDismiss: () -> Unit, onDelete: () -> Unit) {
             }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                MiniStat("კმ", "%.3f".format(trip.km), Color.White, "%.1f წთ".format(trip.seconds / 60.0), Modifier.weight(1f))
+                MiniStat("კმ", "%.3f".format(trip.km), Color.White, "%.1f წთ".format(trip.legs.sumOf { it.seconds + it.waitSeconds } / 60.0), Modifier.weight(1f)) // FIX #10: was trip.seconds only, waiting was missing (TripRow shows seconds+wait)
                 MiniStat("ფასი", "€%.2f".format(trip.fare), Yellow, "", Modifier.weight(1f))
             }
 

@@ -82,7 +82,11 @@ class RideTrackingService : Service() {
     private var lastSeenMeters: Long = -1
     private var stillSinceMs: Long = 0
     private var autoWaiting: Boolean = false
-    // Overlay (bubble) - the blue pill on the home screen: "💰 0.00 € | 📏 0.002 კმ"
+    // Overlay (bubble) - the blue pill on the home screen: "💰 0.00 € | 📏 0.0 კმ"
+    // FIX #6: startForegroundService() requires startForeground() within 5s on
+    // Android 12+, or the system throws ForegroundServiceDidNotStartInTime.
+    // SHOW/HIDE overlay previously returned WITHOUT startForeground -> crash risk.
+    private var isForeground = false
     private var windowManager: WindowManager? = null
     private var overlayView: TextView? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -91,6 +95,14 @@ class RideTrackingService : Service() {
             synchronized(lock) {
                 val snap = store.load()
                 val ride = snap.ride
+                // FIX #5: while PAUSED, keep the still-timer fresh. Before, stillSinceMs
+                // froze during pause, so the first tick after Resume instantly moved
+                // 30s of driving time into waiting.
+                if (ride.started && !ride.running) {
+                    lastSeenMeters = ride.meters
+                    stillSinceMs = System.currentTimeMillis()
+                    autoWaiting = false
+                }
                 if (ride.started && ride.running) {
                     val now = System.currentTimeMillis()
                     // First tick (or after restart): initialise still-timer.
@@ -99,11 +111,14 @@ class RideTrackingService : Service() {
                         stillSinceMs = now
                         autoWaiting = false
                     }
-                    if (ride.meters != lastSeenMeters) {
-                        // Car moved: auto-wait ends, back to driving time.
+                    val movedMeters = ride.meters - lastSeenMeters
+                    if (movedMeters > 0) {
+                        // Car moved: reset still-timer. Auto-wait ends only on a REAL
+                        // move (FIX #14: AUTO_WAIT_MOVE_M = 15m), so a 5m GPS jitter
+                        // jump while standing still does not cancel waiting.
                         lastSeenMeters = ride.meters
                         stillSinceMs = now
-                        autoWaiting = false
+                        if (movedMeters >= AUTO_WAIT_MOVE_M) autoWaiting = false
                         store.save(snap.copy(ride = ride.copy(seconds = ride.seconds + 1)))
                     } else if (!autoWaiting && now - stillSinceMs >= AUTO_WAIT_SECONDS * 1000L) {
                         // Stood still for 30s: the last 30s were counted as driving,
@@ -145,28 +160,33 @@ class RideTrackingService : Service() {
         // If you do not use an overlay at all, remove setOverlayVisible()
         // calls from MainActivity instead of leaving this dead path.
         when (intent?.action) {
-            ACTION_STOP -> {
-                hideOverlay()
-                stopSelf()
-                return START_NOT_STICKY
-            }
             ACTION_SHOW_OVERLAY -> {
-                // FIX: before this just returned - overlay View code did not exist
-                // anywhere, so the bubble NEVER appeared. Now it really shows,
-                // without restarting tracker / resetting anchor.
+                // FIX #6: become a foreground service first, then show the bubble.
+                ensureForeground()
                 showOverlay()
                 return START_STICKY
             }
             ACTION_HIDE_OVERLAY -> {
+                ensureForeground()
                 hideOverlay()
                 return START_STICKY
             }
+            ACTION_STOP -> {
+                hideOverlay()
+                try { stopForeground(STOP_FOREGROUND_REMOVE) } catch (e: Exception) { }
+                isForeground = false
+                stopSelf()
+                return START_NOT_STICKY
+            }
         }
+        // FIX #8: START_STICKY restarts the service after a system kill. If no ride
+        // is running, do NOT start GPS/tick - that drained battery forever.
+        if (!store.load().ride.started) { stopSelf(); return START_NOT_STICKY }
         // Fresh start: auto-wait must not inherit the previous ride's still-timer.
         lastSeenMeters = -1
         stillSinceMs = 0
         autoWaiting = false
-        startForeground(NOTIF_ID, buildNotification(store.load()))
+        ensureForeground()
         // Anchor: resume from the last saved route point, so the first fix after
         // a service restart does not count a jump from (0,0) / a stale point.
         val last = store.load().ride.path.lastOrNull()
@@ -176,6 +196,19 @@ class RideTrackingService : Service() {
         handler.removeCallbacks(tick)
         handler.postDelayed(tick, 1000L)
         return START_STICKY
+    }
+
+    private fun ensureForeground() {
+        if (isForeground) return
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                startForeground(NOTIF_ID, buildNotification(store.load()),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
+            } else {
+                startForeground(NOTIF_ID, buildNotification(store.load()))
+            }
+            isForeground = true
+        } catch (e: Exception) { /* service may already be stopping */ }
     }
 
     private fun onFix(fix: GpsFix) {
@@ -327,10 +360,11 @@ class RideTrackingService : Service() {
         if (!ride.started) { hideOverlay(); return }
         val fare = ride.fare(snap.tariffs)
         val km = ride.totalMeters / 1000.0
-        tv.text = "💰 %.2f € | 📏 %.3f კმ".format(fare, km)
+        tv.text = "💰 %.2f € | 📏 %.1f კმ".format(fare, km) // ბაბლში კმ: წერტილის მერე 1 ციფრი (იყო %.3f = 3 ციფრი)
     }
 
     override fun onDestroy() {
+        isForeground = false
         hideOverlay()
         handler.removeCallbacks(tick)
         tracker?.stop()

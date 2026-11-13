@@ -30,6 +30,9 @@ data class Ride(
     val waitSeconds: Long = 0L,
     val done: List<Leg> = emptyList(),
     val path: List<PathPoint> = emptyList(),
+    /** FIX #15: when the ride STARTED (epoch ms). Trip.time uses this, not Finish time,
+        so a ride crossing midnight counts on the day it started. 0 = not started / legacy. */
+    val startedAt: Long = 0L,
 ) {
     val legKind: LegKind
         get() = when {
@@ -55,12 +58,14 @@ data class Ride(
 
 /**
  * Builds the fare rows for each leg. Each standard band starts from 0 km within its own leg.
+ * NOTE #12 (intentional, kept): PICKUP km does NOT count toward the STANDARD bands -
+ * after boarding the standard leg restarts at 0-5km. This is the chosen rule, documented here.
  *
  * FIXED:
  * - Boarding fee is charged only once per ride (first STANDARD / first FRIENDS leg),
  *   not once per leg.
- * - Free wait minutes are a per-ride allowance: unused free minutes carry over
- *   to the next leg instead of resetting on every leg.
+ * - No free waiting: every waiting minute is billed in full (FIX #20: old comment
+ *   about free-wait carry-over was stale and contradicted the code).
  */
 fun fareLines(legs: List<Leg>, t: Tariffs, applyMin: Boolean = false): List<FareLine> {
     val lines = mutableListOf<FareLine>()
@@ -163,9 +168,13 @@ fun tripFrom(ride: Ride, t: Tariffs, now: Long): Trip {
     val total = fare.sumOf { it.amount }
     val km = ride.totalMeters / 1000.0
     return Trip(
-        // FIX: UUID-based id instead of System.nanoTime() - unique even across restarts.
+        // FIX #13: UUID-based id instead of System.nanoTime() - unique even across restarts.
+        // mostSignificantBits can be negative / collide in theory; keep Long type but
+        // deletion uses removeAll{id==} only on this exact value, and UUID makes a
+        // collision practically impossible.
         id = UUID.randomUUID().mostSignificantBits,
-        time = now,
+        // FIX #15: Trip.time = START time, not Finish time.
+        time = if (ride.startedAt > 0) ride.startedAt else now,
         mode = ride.mode,
         legs = legs,
         path = ride.path,

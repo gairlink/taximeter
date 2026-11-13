@@ -93,7 +93,7 @@ class MainActivity : ComponentActivity() {
                         // Distinguish: after a real Finish, snap has one MORE trip than
                         // the file (the finished trip was just added) -> save as-is.
                         // After a stale recreate, trip counts are equal -> restore fileRide.
-                        if (fileRide.started && !snap.ride.started && snap.trips.size <= fileSnap.trips.size) {
+                        if (fileRide.started && !snap.ride.started && snap.ride != Ride() && snap.trips.size <= fileSnap.trips.size) { // FIX #9: snap.ride==Ride() means a real Finish - never resurrect
                             store.save(snap.copy(ride = fileRide))
                         } else if (snap.ride.started && fileRide.started) {
                             // FIX (time did not count): UI snapshot is 1s BEHIND the
@@ -195,6 +195,22 @@ fun TaxiProScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { /* granted -> idle tracker picks the fix up on its next start; denied -> overlay stays */ }
+    // FIX #7: background location + notifications were in the Manifest but never
+    // requested at runtime. Without BACKGROUND_LOCATION the service loses GPS when
+    // minimised (defeats the whole service); without POST_NOTIFICATIONS (Android 13+)
+    // the foreground notification never shows.
+    val bgPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    val notifPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
     val idleTracker = remember(context) { GpsTracker(context) { fix -> idleFix = fix } }
     DisposableEffect(ride.started) {
         if (!ride.started) idleTracker.start() else idleTracker.stop()
@@ -316,6 +332,12 @@ fun TaxiProScreen(
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             })
                         }
+                        // FIX #7: ask for background location once FINE is granted,
+                        // otherwise GPS stops when the app is minimised.
+                        if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                            bgPermissionLauncher.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+                        }
                         if (gpsFix != null) {
                             pickerOpen = true
                         } else {
@@ -329,7 +351,7 @@ fun TaxiProScreen(
                     },
                     onBoard = { ride = boardPassenger(ride) },
                     onToggleRun = { ride = ride.copy(running = !ride.running) },
-                    onMapTap = { if (ride.running) ride = addRoutePoint(ride) },
+                    onMapTap = { /* FIX #1: was addRoutePoint() - every tap added a FAKE +100m at Montale. Map tap now does nothing. */ },
                     onFinish = {
                         if (ride.started) {
                             if (ride.totalMeters > 0 || ride.totalSeconds > 0 || ride.totalWaitSeconds > 0) {
@@ -366,7 +388,7 @@ fun TaxiProScreen(
                     period = period,
                     onPeriodChange = { period = it },
                     onAdd = { category, amount, note ->
-                        expenses.add(Expense(System.nanoTime(), System.currentTimeMillis(), category, amount, note))
+                        expenses.add(Expense(java.util.UUID.randomUUID().mostSignificantBits, System.currentTimeMillis(), category, amount, note)) // FIX #13: nanoTime could collide
                     },
                     onDelete = { ex -> expenses.removeAll { it.id == ex.id } }
                 )
@@ -441,7 +463,7 @@ fun TaxiProScreen(
 
 /** Starts a ride in the chosen mode. */
 private fun startRide(mode: RideMode): Ride =
-    Ride(started = true, running = true, mode = mode)
+    Ride(started = true, running = true, mode = mode, startedAt = System.currentTimeMillis()) // FIX #15
 
 // FIX: "Appear on top" - without this, Settings.canDrawOverlays() is false
 // and the bubble never shows. Manifest-ში უნდა იყოს:
@@ -468,18 +490,6 @@ private fun boardPassenger(ride: Ride): Ride =
         waitSeconds = 0L
     )
 
-/** One simulated step of 100 m. The route follows a fixed pattern until real GPS is connected. */
-private fun addRoutePoint(ride: Ride): Ride {
-    val i = ride.path.size
-    // FIX: PathPoint is now (lat: Double, lon: Double, leg: Int), NOT (x: Float, y: Float).
-    // Simulated points circle around Montale (43.73166, 10.81344).
-    val point = PathPoint(
-        lat = 43.73166 + 0.0038 * sin(i * 0.35),
-        lon = 10.81344 + 0.0034 * cos(i * 0.23),
-        leg = ride.done.size
-    )
-    return ride.copy(meters = ride.meters + 100, path = ride.path + point)
-}
 
 @Composable
 private fun TopBar(rideActive: Boolean, onTariffClick: () -> Unit) {
@@ -835,10 +845,11 @@ private fun StatsTab(
     val days = (6 downTo 0).map { back ->
         val dStart = todayStart - back * dayMs
         val dEnd = dStart + dayMs
-        val dRev = t.filter { it.time in dStart until dEnd }.sumOf { it.fare }
-        val dFuel = t.filter { it.time in dStart until dEnd }.sumOf { it.fuel }
-        val dExp = e.filter { it.time in dStart until dEnd }.sumOf { it.amount }
-        val dTrips = t.count { it.time in dStart until dEnd }
+        // FIX #11: 7-day chart must use FULL history, not period-filtered t/e
+        val dRev = trips.filter { it.time in dStart until dEnd }.sumOf { it.fare }
+        val dFuel = trips.filter { it.time in dStart until dEnd }.sumOf { it.fuel }
+        val dExp = expenses.filter { it.time in dStart until dEnd }.sumOf { it.amount }
+        val dTrips = trips.count { it.time in dStart until dEnd }
         Triple(dStart, dRev - dFuel - dExp, dTrips)
     }
     val maxDay = days.maxOfOrNull { kotlin.math.abs(it.second) } ?: 0.0

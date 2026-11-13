@@ -90,6 +90,9 @@ fun applyFix(ride: Ride, anchor: GpsFix?, fix: GpsFix): Pair<Ride, GpsFix?> {
 /** Receives GPS readings from the system location service, on the main thread. */
 class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Unit) {
     private val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    // FIX #17: start() could be called several times (DisposableEffect + onStart +
+    // permission callback) -> duplicate requestLocationUpdates on same listener.
+    private var started = false
 
     private val listener = object : LocationListener {
         override fun onLocationChanged(location: Location) {
@@ -104,7 +107,9 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
 
     @SuppressLint("MissingPermission")
     fun start() {
+        if (started) return
         if (!hasLocationPermission(context)) return
+        started = true
         // FIX: GPS alone never fixes indoors / takes minutes. Use NETWORK too
         // (Wi-Fi / cell) for a fast first fix, GPS for accuracy afterwards.
         // + deliver the last known location immediately, so the UI does not
@@ -125,7 +130,8 @@ class GpsTracker(private val context: Context, private val onFix: (GpsFix) -> Un
     }
 
     fun stop() {
-        manager.removeUpdates(listener)
+        started = false
+        try { manager.removeUpdates(listener) } catch (e: Exception) { }
     }
 }
 
@@ -247,6 +253,8 @@ fun RouteMap(path: List<PathPoint>, legs: List<Leg>, modifier: Modifier) {
                 }
                 // Same leg colours as before: green = pickup, yellow = friends, blue = ride.
                 path.indices.groupBy { path[it].leg }.forEach { (leg, idx) ->
+                    // FIX #19: a 1-point leg drew nothing. Draw a dot so it is visible.
+                    if (idx.size == 1) { drawCircle(legColor(legs.getOrNull(leg)?.kind), radius = 5f, center = toScreen(path[idx[0]])); return@forEach }
                     if (idx.size < 2) return@forEach
                     val line = Path()
                     idx.forEachIndexed { i, k ->
